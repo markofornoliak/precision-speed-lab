@@ -530,6 +530,9 @@ async function idleLatencyTest(runToken) {
 }
 
 function supportsStreamingUpload() {
+  const negotiatedProtocol = String(state.nextHopProtocol || '').toLowerCase();
+  const transportSupportsStreaming = negotiatedProtocol === 'h2' || negotiatedProtocol.startsWith('h3');
+  if (!transportSupportsStreaming) return false;
   try {
     if (typeof ReadableStream === 'undefined' || typeof Request === 'undefined') return false;
     let duplexAccessed = false;
