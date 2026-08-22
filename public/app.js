@@ -1,11 +1,13 @@
 import {
   median,
   latencySummary,
+  qualifyLatencySamples,
   summarizeThroughputRuns,
   chooseAdaptiveBytes,
   chooseRunCount,
   shouldIncreaseStreams,
   bufferbloatAnalysis,
+  receiveWindowSummary,
   probeLoss,
   splitBytes,
   coefficientOfVariation,
@@ -29,6 +31,7 @@ const state = {
   connections: 'auto',
   capabilities: null,
   serverInfo: null,
+  nextHopProtocol: '',
   totalBytes: 0,
   testStartedAt: 0,
   downloadSeries: [],
@@ -166,22 +169,24 @@ async function idleLatencyTest() {
   const samples = [];
   let sent = 0;
   let failed = 0;
-  for (let index = 0; index < 24; index += 1) {
+  const warmupCount = 4;
+  const attempts = state.precise ? 40 : 24;
+  for (let index = 0; index < attempts; index += 1) {
     if (!state.running) throw new Error('stopped');
     const result = await probeOnce(state.apiBase, 2500, 'idle');
     sent += 1;
     if (result.ok) {
-      if (index >= 3) samples.push(result.latencyMs);
+      if (index >= warmupCount) samples.push(result.latencyMs);
       const current = latencySummary(samples);
       if (current) els.ping.textContent = formatMs(current.p50);
-    } else if (index >= 3) {
+    } else if (index >= warmupCount) {
       failed += 1;
     }
-    await sleep(65);
+    await sleep(55);
   }
   const summary = latencySummary(samples);
-  if (!summary || summary.count < 8) throw new Error('Insufficient successful latency probes');
-  const measuredSent = Math.max(1, sent - 3);
+  if (!summary || summary.count < 12) throw new Error('Insufficient successful latency probes');
+  const measuredSent = Math.max(1, sent - warmupCount);
   const loss = probeLoss(measuredSent, failed);
   els.ping.textContent = formatMs(summary.p50);
   els.jitter.textContent = formatMs(summary.jitter);
@@ -221,6 +226,8 @@ async function downloadRun(totalBytes, streams, { record = true, account = false
   let received = 0;
   let lastReceived = 0;
   let lastTime = started;
+  let intervalIndex = 0;
+  const stabilitySamples = [];
   const allocations = splitBytes(totalBytes, streams);
   const jobs = allocations.map(async (bytes) => {
     const controller = createTrackedController();
@@ -239,7 +246,10 @@ async function downloadRun(totalBytes, streams, { record = true, account = false
         if (record && now - lastTime >= 220) {
           const deltaBytes = received - lastReceived;
           const deltaSeconds = (now - lastTime) / 1000;
-          recordSeries('down', deltaBytes * 8 / deltaSeconds / 1_000_000);
+          const sampleMbps = deltaBytes * 8 / deltaSeconds / 1_000_000;
+          recordSeries('down', sampleMbps);
+          if (intervalIndex > 0 && Number.isFinite(sampleMbps) && sampleMbps > 0) stabilitySamples.push(sampleMbps);
+          intervalIndex += 1;
           lastReceived = received;
           lastTime = now;
         }
@@ -254,7 +264,7 @@ async function downloadRun(totalBytes, streams, { record = true, account = false
   const mbps = received * 8 / elapsedSeconds / 1_000_000;
   if (record) recordSeries('down', mbps);
   if (account) addMeasuredBytes(received);
-  return { mbps, bytes: received, elapsedSeconds };
+  return { mbps, bytes: received, elapsedSeconds, stabilitySamples, timing: 'client-receive-wall-clock' };
 }
 
 function createUploadStream(bytes) {
@@ -277,9 +287,10 @@ function createUploadStream(bytes) {
   });
 }
 
-async function pollUploadProgress(ids, flag, record) {
+async function pollUploadProgress(ids, flag, record, stabilitySamples) {
   let previousBytes = 0;
   let previousTime = performance.now();
+  let intervalIndex = 0;
   while (flag.active && state.running) {
     try {
       const data = await fetchJson(`/api/progress?ids=${ids.join(',')}`, {}, 1800);
@@ -288,6 +299,8 @@ async function pollUploadProgress(ids, flag, record) {
       if (record && currentBytes > previousBytes && now - previousTime >= 180) {
         const mbps = (currentBytes - previousBytes) * 8 / ((now - previousTime) / 1000) / 1_000_000;
         recordSeries('up', mbps);
+        if (intervalIndex > 0 && Number.isFinite(mbps) && mbps > 0) stabilitySamples.push(mbps);
+        intervalIndex += 1;
         previousBytes = currentBytes;
         previousTime = now;
       }
@@ -301,10 +314,12 @@ async function pollUploadProgress(ids, flag, record) {
 async function streamingUploadRun(totalBytes, streams, { record = true, account = false } = {}) {
   const allocations = splitBytes(totalBytes, streams);
   const ids = allocations.map(() => crypto.randomUUID());
-  const started = performance.now();
+  const clientStarted = performance.now();
   const flag = { active: true };
-  const polling = pollUploadProgress(ids, flag, record);
+  const stabilitySamples = [];
+  const polling = pollUploadProgress(ids, flag, record, stabilitySamples);
   let serverReceived = 0;
+  const serverWindows = [];
 
   try {
     await Promise.all(allocations.map(async (bytes, index) => {
@@ -322,6 +337,7 @@ async function streamingUploadRun(totalBytes, streams, { record = true, account 
         const result = await response.json();
         if (result.received !== bytes) throw new Error('Upload server byte count mismatch');
         serverReceived += result.received;
+        serverWindows.push(result);
       } finally {
         releaseController(controller);
       }
@@ -331,12 +347,21 @@ async function streamingUploadRun(totalBytes, streams, { record = true, account 
     await polling.catch(() => {});
   }
 
-  const elapsedSeconds = (performance.now() - started) / 1000;
   if (serverReceived !== totalBytes) throw new Error(`Upload received ${serverReceived} of ${totalBytes} bytes`);
-  const mbps = serverReceived * 8 / elapsedSeconds / 1_000_000;
+  const receiveWindow = receiveWindowSummary(serverWindows);
+  const clientElapsedSeconds = (performance.now() - clientStarted) / 1000;
+  const elapsedSeconds = receiveWindow ? receiveWindow.elapsedMs / 1000 : clientElapsedSeconds;
+  const mbps = receiveWindow?.mbps ?? (serverReceived * 8 / clientElapsedSeconds / 1_000_000);
   if (record) recordSeries('up', mbps);
   if (account) addMeasuredBytes(serverReceived);
-  return { mbps, bytes: serverReceived, elapsedSeconds, mode: 'streaming' };
+  return {
+    mbps,
+    bytes: serverReceived,
+    elapsedSeconds,
+    stabilitySamples,
+    mode: 'streaming',
+    timing: receiveWindow ? 'server-receive-window' : 'client-end-to-end-fallback',
+  };
 }
 
 async function fallbackUploadRun(totalBytes, streams, { record = true, account = false } = {}) {
@@ -344,7 +369,9 @@ async function fallbackUploadRun(totalBytes, streams, { record = true, account =
   let completedBytes = 0;
   let lastBytes = 0;
   let lastTime = performance.now();
-  const started = lastTime;
+  const clientStarted = lastTime;
+  const serverWindows = [];
+  const stabilitySamples = [];
 
   async function worker() {
     while (state.running) {
@@ -361,6 +388,8 @@ async function fallbackUploadRun(totalBytes, streams, { record = true, account =
         const result = await response.json();
         if (result.received !== size) throw new Error('Upload server byte count mismatch');
         completedBytes += result.received;
+        serverWindows.push(result);
+        if (Number.isFinite(result.serverMeasuredMbps) && result.serverMeasuredMbps > 0) stabilitySamples.push(result.serverMeasuredMbps);
         const now = performance.now();
         if (record && now - lastTime >= 180) {
           recordSeries('up', (completedBytes - lastBytes) * 8 / ((now - lastTime) / 1000) / 1_000_000);
@@ -374,12 +403,21 @@ async function fallbackUploadRun(totalBytes, streams, { record = true, account =
   }
 
   await Promise.all(Array.from({ length: streams }, () => worker()));
-  const elapsedSeconds = (performance.now() - started) / 1000;
   if (completedBytes !== totalBytes) throw new Error(`Upload received ${completedBytes} of ${totalBytes} bytes`);
-  const mbps = completedBytes * 8 / elapsedSeconds / 1_000_000;
+  const receiveWindow = receiveWindowSummary(serverWindows);
+  const clientElapsedSeconds = (performance.now() - clientStarted) / 1000;
+  const elapsedSeconds = receiveWindow ? receiveWindow.elapsedMs / 1000 : clientElapsedSeconds;
+  const mbps = receiveWindow?.mbps ?? (completedBytes * 8 / clientElapsedSeconds / 1_000_000);
   if (record) recordSeries('up', mbps);
   if (account) addMeasuredBytes(completedBytes);
-  return { mbps, bytes: completedBytes, elapsedSeconds, mode: 'chunked-fallback' };
+  return {
+    mbps,
+    bytes: completedBytes,
+    elapsedSeconds,
+    stabilitySamples,
+    mode: 'chunked-fallback',
+    timing: receiveWindow ? 'server-receive-window' : 'client-end-to-end-fallback',
+  };
 }
 
 async function uploadRun(totalBytes, streams, options = {}) {
@@ -394,6 +432,11 @@ async function warmUp(kind, streams) {
   if (kind === 'down') await downloadRun(bytes, streams, { record: false, account: false });
   else await uploadRun(bytes, streams, { record: false, account: false });
   await sleep(120);
+}
+
+function autoStreamCandidates() {
+  const protocol = String(state.nextHopProtocol || '').toLowerCase();
+  return protocol === 'h2' || protocol === 'h3' || protocol.startsWith('h3-') ? [2, 4, 8] : [2, 4];
 }
 
 async function calibrate(kind) {
@@ -417,7 +460,7 @@ async function calibrate(kind) {
   let bestMbps = result.mbps;
   const scaling = [{ streams, mbps: bestMbps }];
 
-  for (const candidate of [2, 4, 8]) {
+  for (const candidate of autoStreamCandidates()) {
     if (!state.running) throw new Error('stopped');
     await warmUp(kind, candidate);
     calibrationBytes = chooseAdaptiveBytes(bestMbps, {
@@ -461,9 +504,11 @@ async function runMainThroughput(kind, calibration) {
   });
   const runs = chooseRunCount({ precise: state.precise, totalBytes });
   const values = [];
+  const stabilitySamples = [];
   const loadedSamples = [];
   let loadedFailed = 0;
   let loadedSent = 0;
+  const timingMethods = new Set();
 
   for (let run = 0; run < runs; run += 1) {
     if (!state.running) throw new Error('stopped');
@@ -483,27 +528,37 @@ async function runMainThroughput(kind, calibration) {
     loadedSamples.push(...loaded.samples);
     loadedFailed += loaded.failed;
     loadedSent += loaded.sent;
+    stabilitySamples.push(...(result.stabilitySamples || []));
+    if (result.timing) timingMethods.add(result.timing);
     values.push(result.mbps);
     const summary = summarizeThroughputRuns(values);
-    const loadedSummary = latencySummary(loadedSamples);
+    const loadedQualified = qualifyLatencySamples(loadedSamples, { sent: loadedSent, failed: loadedFailed });
     (kind === 'down' ? els.down : els.up).textContent = summary ? formatSpeed(summary.medianMbps) : '—';
-    (kind === 'down' ? els.loadedDown : els.loadedUp).textContent = loadedSummary ? formatMs(loadedSummary.p50) : '—';
+    (kind === 'down' ? els.loadedDown : els.loadedUp).textContent = loadedQualified.valid ? formatMs(loadedQualified.summary.p50) : '—';
     updateLive(result.mbps);
     if (run < runs - 1) await sleep(250);
   }
 
   return {
-    totalBytes, runs, streams: calibration.streams, values,
+    totalBytes,
+    runs,
+    streams: calibration.streams,
+    values,
+    stabilitySamples,
+    timingMethods: [...timingMethods],
     summary: summarizeThroughputRuns(values),
-    loaded: { samples: loadedSamples, sent: loadedSent, failed: loadedFailed, summary: latencySummary(loadedSamples) },
+    loaded: {
+      samples: loadedSamples,
+      sent: loadedSent,
+      failed: loadedFailed,
+      qualification: qualifyLatencySamples(loadedSamples, { sent: loadedSent, failed: loadedFailed }),
+    },
   };
 }
 
-function stabilityCvFor(kind) {
-  const series = (kind === 'down' ? state.downloadSeries : state.uploadSeries)
-    .filter((point) => point.v > 0)
-    .map((point) => point.v);
-  return coefficientOfVariation(series);
+function stabilityCv(samples) {
+  const filtered = samples.filter((value) => Number.isFinite(value) && value > 0);
+  return filtered.length >= 5 ? coefficientOfVariation(filtered) : null;
 }
 
 function showConfidence(kind, summary) {
@@ -566,18 +621,20 @@ async function startTest() {
     showConfidence('down', down);
     showConfidence('up', up);
 
-    const downCv = stabilityCvFor('down');
-    const upCv = stabilityCvFor('up');
+    const downCv = stabilityCv(downResult.stabilitySamples);
+    const upCv = stabilityCv(upResult.stabilitySamples);
     els.stabilityDown.textContent = formatCv(downCv);
     els.stabilityUp.textContent = formatCv(upCv);
 
-    const loadedDown = downResult.loaded.summary?.p50;
-    const loadedUp = upResult.loaded.summary?.p50;
+    const downLoaded = downResult.loaded.qualification;
+    const upLoaded = upResult.loaded.qualification;
+    const loadedDown = downLoaded.valid ? downLoaded.summary.p50 : null;
+    const loadedUp = upLoaded.valid ? upLoaded.summary.p50 : null;
     els.loadedDown.textContent = formatMs(loadedDown);
     els.loadedUp.textContent = formatMs(loadedUp);
 
-    const bloat = bufferbloatAnalysis(idle.summary.p50, loadedDown, loadedUp);
-    els.bufferbloat.textContent = bloat ? `${bloat.grade} · +${formatMs(bloat.worstIncreaseMs)} ms` : '—';
+    const bloat = downLoaded.valid && upLoaded.valid ? bufferbloatAnalysis(idle.summary.p50, loadedDown, loadedUp) : null;
+    els.bufferbloat.textContent = bloat ? `+${formatMs(bloat.worstIncreaseMs)} ms` : '—';
 
     const removed = (down?.removed || 0) + (up?.removed || 0);
     const ciNote = down?.confidence95 && up?.confidence95
@@ -587,9 +644,11 @@ async function startTest() {
 
     const afterHealth = await healthCheck();
     const risk = analyzeServerRisk(beforeHealth, afterHealth, [downCalibration, upCalibration]);
+    const loadedInvalid = [downLoaded, upLoaded].filter((item) => !item.valid);
     const loadedProbeFailures = downResult.loaded.failed + upResult.loaded.failed;
     if (risk) setNotice(risk, 'warning');
-    else if (loadedProbeFailures > 0) setNotice(`${loadedProbeFailures} loaded-latency HTTP probe(s) timed out; throughput remains valid, loaded-latency tails may be understated.`, 'warning');
+    else if (loadedInvalid.length) setNotice('Loaded-latency did not meet the minimum probe-quality threshold, so bufferbloat was not promoted as a final metric.', 'warning');
+    else if (loadedProbeFailures > 0) setNotice(`${loadedProbeFailures} loaded-latency HTTP probe(s) timed out; accepted metrics still passed the probe-quality threshold.`, 'warning');
     else setNotice(`Auto streams: ${downCalibration.streams} down / ${upCalibration.streams} up. Main payload: ${(downResult.totalBytes / MB).toFixed(0)} MB down, ${(upResult.totalBytes / MB).toFixed(0)} MB up per run.`, 'neutral');
 
     setPhase('DONE');
@@ -701,15 +760,26 @@ async function selectMeasurementServer() {
   return scored[0]?.url || '';
 }
 
+function detectNextHopProtocol(path) {
+  try {
+    const url = new URL(api(path), location.href).href;
+    const entries = performance.getEntriesByName(url);
+    return entries.at(-1)?.nextHopProtocol || '';
+  } catch {
+    return '';
+  }
+}
+
 async function initialize() {
   try {
     state.apiBase = await selectMeasurementServer();
     state.capabilities = await fetchJson('/api/capabilities', {}, 3000);
     state.serverInfo = await fetchJson('/api/info', {}, 3000);
+    state.nextHopProtocol = detectNextHopProtocol('/api/info');
     const node = state.serverInfo.node || state.capabilities.node || {};
     els.serverStatus.textContent = `Ready · ${node.region || 'local'}`;
     els.nodeInfo.textContent = `${node.id || 'measurement node'} · ${state.serverInfo.clientFamily || 'network'}`;
-    els.footerInfo.textContent = `${state.serverInfo.protocol || 'HTTP'} · ${state.serverInfo.clientFamily || 'network'}`;
+    els.footerInfo.textContent = `${state.nextHopProtocol || state.serverInfo.protocol || 'HTTP'} · ${state.serverInfo.clientFamily || 'network'}`;
     const maxMiB = state.capabilities.maxTransferMiB || 500;
     $$('#sizeSelector button[data-size]').forEach((button) => {
       button.disabled = Number(button.dataset.size) > maxMiB;
