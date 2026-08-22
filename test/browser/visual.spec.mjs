@@ -8,9 +8,9 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const baselinePath = path.resolve(here, '..', 'visual-baselines.json');
 const baselines = JSON.parse(fs.readFileSync(baselinePath, 'utf8'));
 
-async function waitForIdle(page) {
+async function waitForReady(page) {
   await page.goto('/');
-  await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__?.getState())).toBe('IDLE');
+  await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__?.getState())).toBe('READY');
   await normalizeDynamic(page);
 }
 
@@ -30,6 +30,7 @@ async function setVisualState(page, state) {
     const phase = document.querySelector('#phaseLabel');
     const description = document.querySelector('#phaseDescription');
     const speed = document.querySelector('#speedValue');
+    const liveUnit = document.querySelector('.live-unit');
     const start = document.querySelector('#startBtn');
     const stop = document.querySelector('#stopBtn');
     const quality = document.querySelector('#qualitySection');
@@ -38,22 +39,25 @@ async function setVisualState(page, state) {
 
     document.body.dataset.appState = visualState;
     quality.hidden = true;
+    quality.open = false;
     expert.hidden = true;
     expert.open = false;
     error.hidden = true;
     start.hidden = false;
     stop.hidden = true;
 
-    if (visualState === 'DOWNLOADING') {
+    if (visualState === 'DOWNLOAD') {
       phase.textContent = 'Download';
       description.textContent = 'Download · основной прогон 2 из 3';
       speed.textContent = '934.2';
+      liveUnit.textContent = 'Mbps';
       start.hidden = true;
       stop.hidden = false;
-    } else if (visualState === 'UPLOADING') {
+    } else if (visualState === 'UPLOAD') {
       phase.textContent = 'Upload';
       description.textContent = 'Upload · основной прогон 2 из 3';
       speed.textContent = '487.6';
+      liveUnit.textContent = 'Mbps';
       start.hidden = true;
       stop.hidden = false;
     } else if (visualState === 'COMPLETE') {
@@ -73,7 +77,7 @@ async function setVisualState(page, state) {
       expert.hidden = false;
       start.textContent = 'Повторить тест';
     } else if (visualState === 'ERROR') {
-      phase.textContent = 'Measurement unavailable';
+      phase.textContent = 'Unavailable';
       description.textContent = 'Неполный результат не публикуется как финальный';
       error.hidden = false;
       document.querySelector('#errorTitle').textContent = 'Measurement node is busy';
@@ -97,49 +101,49 @@ async function visualHash(page, name) {
   expect(hash, `visual regression: ${name}`).toBe(baselines[name]);
 }
 
-test('visual idle desktop', async ({ page }) => {
+test('visual ready desktop', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await waitForIdle(page);
-  await visualHash(page, 'idle-desktop');
+  await waitForReady(page);
+  await visualHash(page, 'ready-desktop');
 });
 
 test('visual running download', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await waitForIdle(page);
-  await setVisualState(page, 'DOWNLOADING');
+  await waitForReady(page);
+  await setVisualState(page, 'DOWNLOAD');
   await visualHash(page, 'running-download');
 });
 
 test('visual running upload', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await waitForIdle(page);
-  await setVisualState(page, 'UPLOADING');
+  await waitForReady(page);
+  await setVisualState(page, 'UPLOAD');
   await visualHash(page, 'running-upload');
 });
 
 test('visual completed desktop', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await waitForIdle(page);
+  await waitForReady(page);
   await setVisualState(page, 'COMPLETE');
   await visualHash(page, 'complete-desktop');
 });
 
-test('visual idle mobile', async ({ page }) => {
+test('visual ready mobile', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await waitForIdle(page);
-  await visualHash(page, 'idle-mobile');
+  await waitForReady(page);
+  await visualHash(page, 'ready-mobile');
 });
 
 test('visual completed mobile', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await waitForIdle(page);
+  await waitForReady(page);
   await setVisualState(page, 'COMPLETE');
   await visualHash(page, 'complete-mobile');
 });
 
 test('visual error state', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await waitForIdle(page);
+  await waitForReady(page);
   await setVisualState(page, 'ERROR');
   await visualHash(page, 'error-desktop');
 });

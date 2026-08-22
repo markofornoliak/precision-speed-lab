@@ -1,9 +1,9 @@
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
-async function waitForIdle(page) {
+async function waitForReady(page) {
   await page.goto('/');
-  await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__?.getState())).toBe('IDLE');
+  await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__?.getState())).toBe('READY');
   await expect(page.getByRole('button', { name: 'Начать тест' })).toBeEnabled();
 }
 
@@ -22,14 +22,14 @@ async function expectNoSeriousA11yViolations(page) {
   expect(serious, JSON.stringify(serious, null, 2)).toEqual([]);
 }
 
-test('idle instrument is minimal, keyboard operable and accessible @safari', async ({ page }) => {
-  await waitForIdle(page);
-
+test('ready instrument is nearly empty, keyboard operable and accessible @safari', async ({ page }) => {
+  await waitForReady(page);
   await expect(page.locator('#downloadValue')).toHaveText('—');
   await expect(page.locator('#uploadValue')).toHaveText('—');
   await expect(page.locator('#pingValue')).toHaveText('—');
   await expect(page.locator('#qualitySection')).toBeHidden();
   await expect(page.locator('#expertDetails')).toBeHidden();
+  await expect(page.locator('.live-readout')).toBeHidden();
 
   const start = page.getByRole('button', { name: 'Начать тест' });
   await start.focus();
@@ -38,25 +38,56 @@ test('idle instrument is minimal, keyboard operable and accessible @safari', asy
   await expect(page.locator('#settingsDetails > summary')).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(page.locator('#settingsDetails')).toHaveAttribute('open', '');
-
   await expect(page.getByRole('radio', { name: 'Auto', exact: true })).toBeChecked();
   await expect(page.getByRole('switch')).toBeChecked();
   await expectNoSeriousA11yViolations(page);
 });
 
+test('public lifecycle follows the deliberate phase sequence', async ({ page }) => {
+  await waitForReady(page);
+  await chooseFastDeterministicMode(page);
+  const observed = [];
+  await page.exposeFunction('capturePslState', (value) => observed.push(value));
+  await page.evaluate(() => {
+    let previous = window.__PSL_DIAGNOSTICS__.getState();
+    window.capturePslState(previous);
+    window.__PSL_STATE_WATCH__ = window.setTimeout(function watch() {
+      const current = window.__PSL_DIAGNOSTICS__.getState();
+      if (current !== previous) {
+        previous = current;
+        window.capturePslState(current);
+      }
+      if (!['COMPLETE', 'CANCELLED', 'ERROR'].includes(current)) window.__PSL_STATE_WATCH__ = window.setTimeout(watch, 15);
+    }, 15);
+  });
+  await page.getByRole('button', { name: 'Начать тест' }).click();
+  await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__.getState()), { timeout: 40_000 }).toBe('COMPLETE');
+  await page.waitForTimeout(50);
+  expect(observed[0]).toBe('READY');
+  for (const required of ['PREPARING', 'LATENCY', 'DOWNLOAD', 'UPLOAD', 'ANALYZING', 'COMPLETE']) {
+    expect(observed, `missing ${required} in ${observed.join(' -> ')}`).toContain(required);
+  }
+  expect(observed.some((state) => /CALIBRAT|WARM|DOWNLOADING|UPLOADING|CANCELLING/.test(state))).toBe(false);
+});
+
 test('Stop discards partial data instead of promoting a result @safari', async ({ page }) => {
-  await waitForIdle(page);
+  await waitForReady(page);
   await page.getByRole('button', { name: 'Начать тест' }).click();
   await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__.getState())).toBe('LATENCY');
   await expect(page.getByRole('button', { name: 'Остановить' })).toBeVisible();
   await page.getByRole('button', { name: 'Остановить' }).click();
-
   await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__.getState())).toBe('CANCELLED');
   await expect(page.locator('#downloadValue')).toHaveText('—');
   await expect(page.locator('#uploadValue')).toHaveText('—');
   await expect(page.locator('#pingValue')).toHaveText('—');
   expect(await page.evaluate(() => window.__PSL_DIAGNOSTICS__.getFinalResult())).toBeNull();
   await expect(page.locator('#measurementNotice')).toContainText('Частичные метрики отброшены');
+  await expect(page.getByRole('button', { name: 'Повторить тест' })).toBeFocused();
+  const before = await page.evaluate(() => window.__PSL_DIAGNOSTICS__.getTelemetryRenderCount());
+  await page.waitForTimeout(400);
+  const after = await page.evaluate(() => window.__PSL_DIAGNOSTICS__.getTelemetryRenderCount());
+  expect(after).toBe(before);
+  expect(await page.evaluate(() => window.__PSL_DIAGNOSTICS__.getPendingControllerCount())).toBe(0);
 });
 
 test('cancellation during download aborts the run and leaves no final metrics', async ({ page }) => {
@@ -64,11 +95,10 @@ test('cancellation during download aborts the run and leaves no final metrics', 
     await new Promise((resolve) => setTimeout(resolve, 450));
     try { await route.continue(); } catch {}
   });
-  await waitForIdle(page);
+  await waitForReady(page);
   await chooseFastDeterministicMode(page);
   await page.getByRole('button', { name: 'Начать тест' }).click();
-
-  await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__.getState()), { timeout: 30_000 }).toBe('DOWNLOADING');
+  await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__.getState()), { timeout: 30_000 }).toBe('DOWNLOAD');
   await page.getByRole('button', { name: 'Остановить' }).click();
   await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__.getState())).toBe('CANCELLED');
   expect(await page.evaluate(() => window.__PSL_DIAGNOSTICS__.getFinalResult())).toBeNull();
@@ -76,32 +106,35 @@ test('cancellation during download aborts the run and leaves no final metrics', 
 });
 
 test('cancellation during upload aborts the run and leaves no final metrics', async ({ page }) => {
-  await page.route('**/api/upload?**', async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 500));
+  let releaseUpload;
+  const uploadGate = new Promise((resolve) => { releaseUpload = resolve; });
+  await page.route('**/api/upload**', async (route) => {
+    await uploadGate;
     try { await route.continue(); } catch {}
   });
-  await waitForIdle(page);
+  await waitForReady(page);
   await chooseFastDeterministicMode(page);
   await page.getByRole('button', { name: 'Начать тест' }).click();
-
-  await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__.getState()), { timeout: 35_000 }).toBe('UPLOADING');
+  await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__.getState()), { timeout: 35_000 }).toBe('UPLOAD');
   await page.getByRole('button', { name: 'Остановить' }).click();
+  releaseUpload();
   await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__.getState())).toBe('CANCELLED');
   expect(await page.evaluate(() => window.__PSL_DIAGNOSTICS__.getFinalResult())).toBeNull();
   await expect(page.locator('#uploadValue')).toHaveText('—');
 });
 
-test('completed result promotes only immutable validated evidence @safari', async ({ page }) => {
-  await waitForIdle(page);
+test('completed result promotes immutable evidence while diagnostics stay collapsed @safari', async ({ page }) => {
+  await waitForReady(page);
   await chooseFastDeterministicMode(page);
   await page.getByRole('button', { name: 'Начать тест' }).click();
-
   await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__.getState()), { timeout: 40_000 }).toBe('COMPLETE');
   await expect(page.locator('#downloadValue')).not.toHaveText('—');
   await expect(page.locator('#uploadValue')).not.toHaveText('—');
   await expect(page.locator('#pingValue')).not.toHaveText('—');
   await expect(page.locator('#qualitySection')).toBeVisible();
+  await expect(page.locator('#qualitySection')).not.toHaveAttribute('open', '');
   await expect(page.locator('#expertDetails')).toBeVisible();
+  await expect(page.locator('#expertDetails')).not.toHaveAttribute('open', '');
 
   const immutability = await page.evaluate(() => {
     const result = window.__PSL_DIAGNOSTICS__.getFinalResult();
@@ -113,7 +146,6 @@ test('completed result promotes only immutable validated evidence @safari', asyn
     };
   });
   expect(immutability).toEqual({ root: true, download: true, values: true, raw: true });
-
   await page.locator('#expertDetails > summary').click();
   await expect(page.locator('#downRunsValue')).toContainText('/');
   await expect(page.locator('#uploadTimingValue')).not.toHaveText('—');
@@ -121,8 +153,8 @@ test('completed result promotes only immutable validated evidence @safari', asyn
   await expectNoSeriousA11yViolations(page);
 });
 
-test('Canvas is absent from active measurement work and renders on-demand only', async ({ page }) => {
-  await waitForIdle(page);
+test('Canvas is absent from active measurement work and renders only on demand', async ({ page }) => {
+  await waitForReady(page);
   await chooseFastDeterministicMode(page);
   expect(await page.evaluate(() => window.__PSL_DIAGNOSTICS__.getChartRenderCount())).toBe(0);
   await page.getByRole('button', { name: 'Начать тест' }).click();
@@ -133,8 +165,8 @@ test('Canvas is absent from active measurement work and renders on-demand only',
   await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__.getState())).toBe('CANCELLED');
 });
 
-test('measurement is invalidated if the lifecycle reports background suspension', async ({ page }) => {
-  await waitForIdle(page);
+test('measurement is invalidated if lifecycle reports background suspension', async ({ page }) => {
+  await waitForReady(page);
   await page.getByRole('button', { name: 'Начать тест' }).click();
   await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__.getState())).toBe('LATENCY');
   await page.evaluate(() => document.dispatchEvent(new Event('freeze')));
@@ -145,7 +177,7 @@ test('measurement is invalidated if the lifecycle reports background suspension'
 });
 
 test('structured backend error gives a useful recovery path', async ({ page }) => {
-  await page.route('**/api/info', async (route) => {
+  await page.route('**/api/capabilities', async (route) => {
     await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Server unavailable' }) });
   });
   await page.goto('/');
@@ -155,14 +187,15 @@ test('structured backend error gives a useful recovery path', async ({ page }) =
   await expect(page.getByRole('button', { name: 'Повторить подключение' })).toBeEnabled();
 });
 
-test('320px and 390px layouts do not overflow with ugly instrument values', async ({ page }) => {
+test('320px and 390px layouts contain extreme instrument values and Gbps units', async ({ page }) => {
   for (const viewport of [{ width: 320, height: 568 }, { width: 390, height: 844 }]) {
     await page.setViewportSize(viewport);
-    await waitForIdle(page);
+    await waitForReady(page);
     await page.evaluate(() => {
       document.body.dataset.appState = 'COMPLETE';
       document.querySelector('#downloadValue').textContent = '9876.4';
-      document.querySelector('#uploadValue').textContent = '10000.0';
+      document.querySelector('#uploadValue').textContent = '10.2';
+      document.querySelector('#uploadUnit').textContent = 'Gbps';
       document.querySelector('#pingValue').textContent = '1247';
       document.querySelector('#qualitySection').hidden = false;
       document.querySelector('#expertDetails').hidden = false;
@@ -176,12 +209,12 @@ test('320px and 390px layouts do not overflow with ugly instrument values', asyn
   }
 });
 
-test('initialization does not produce uncaught exceptions or excessive static requests', async ({ page }) => {
+test('initialization produces no uncaught exceptions or excessive static requests', async ({ page }) => {
   const errors = [];
   const urls = [];
   page.on('pageerror', (error) => errors.push(error.message));
   page.on('request', (request) => urls.push(new URL(request.url()).pathname));
-  await waitForIdle(page);
+  await waitForReady(page);
   expect(errors).toEqual([]);
   const staticAssets = urls.filter((pathname) => ['/', '/styles.css', '/app.js', '/measurement-core.js', '/ui-core.js'].includes(pathname));
   expect(new Set(staticAssets).size).toBeLessThanOrEqual(5);

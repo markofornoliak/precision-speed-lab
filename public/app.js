@@ -19,6 +19,7 @@ import {
   canTransition,
   createStateMachine,
   formatThroughput,
+  formatThroughputDisplay,
   formatLatency,
   formatPercent,
   formatCv,
@@ -37,21 +38,16 @@ const FALLBACK_UPLOAD_CHUNK = new Blob([new Uint8Array(8 * MIB)], { type: 'appli
 const ACTIVE_STATES = new Set([
   UI_STATES.PREPARING,
   UI_STATES.LATENCY,
-  UI_STATES.CALIBRATING_DOWNLOAD,
-  UI_STATES.WARMING_DOWNLOAD,
-  UI_STATES.DOWNLOADING,
-  UI_STATES.CALIBRATING_UPLOAD,
-  UI_STATES.WARMING_UPLOAD,
-  UI_STATES.UPLOADING,
+  UI_STATES.DOWNLOAD,
+  UI_STATES.UPLOAD,
   UI_STATES.ANALYZING,
-  UI_STATES.CANCELLING,
 ]);
 const ANNOUNCED_STATES = new Set([
-  UI_STATES.IDLE,
+  UI_STATES.READY,
   UI_STATES.PREPARING,
   UI_STATES.LATENCY,
-  UI_STATES.DOWNLOADING,
-  UI_STATES.UPLOADING,
+  UI_STATES.DOWNLOAD,
+  UI_STATES.UPLOAD,
   UI_STATES.ANALYZING,
   UI_STATES.COMPLETE,
   UI_STATES.CANCELLED,
@@ -82,6 +78,7 @@ const state = {
 };
 
 const els = {
+  instrument: $('#instrument'),
   start: $('#startBtn'),
   stop: $('#stopBtn'),
   phase: $('#phaseLabel'),
@@ -91,7 +88,9 @@ const els = {
   ping: $('#pingValue'),
   jitter: $('#jitterValue'),
   down: $('#downloadValue'),
+  downUnit: $('#downloadUnit'),
   up: $('#uploadValue'),
+  upUnit: $('#uploadUnit'),
   loadedDown: $('#loadedDownValue'),
   loadedUp: $('#loadedUpValue'),
   probeLoss: $('#probeLossValue'),
@@ -113,20 +112,14 @@ const els = {
 
 function phaseDescriptionFor(uiState) {
   switch (uiState) {
-    case UI_STATES.BOOTING: return 'Подготавливаем измерительный узел';
-    case UI_STATES.SERVER_READY: return 'Измерительный узел отвечает';
-    case UI_STATES.IDLE: return 'Один запуск — автоматический выбор payload и потоков';
+    case UI_STATES.CONNECTING: return 'Подготавливаем измерительный узел';
+    case UI_STATES.READY: return 'Один запуск — автоматический выбор payload и потоков';
     case UI_STATES.PREPARING: return 'Проверяем узел до начала измерения';
     case UI_STATES.LATENCY: return 'HTTP RTT baseline до нагрузочного трафика';
-    case UI_STATES.CALIBRATING_DOWNLOAD: return 'Подбираем число потоков и измерительный объём';
-    case UI_STATES.WARMING_DOWNLOAD: return 'Warm-up не включается в основной результат';
-    case UI_STATES.DOWNLOADING: return 'Считаем реально полученные байты по browser wall-clock';
-    case UI_STATES.CALIBRATING_UPLOAD: return 'Подбираем число потоков и измерительный объём';
-    case UI_STATES.WARMING_UPLOAD: return 'Warm-up не включается в основной результат';
-    case UI_STATES.UPLOADING: return 'Скорость определяется по server receive-window';
+    case UI_STATES.DOWNLOAD: return 'Калибровка, warm-up и измерение download';
+    case UI_STATES.UPLOAD: return 'Калибровка, warm-up и server receive-window';
     case UI_STATES.ANALYZING: return 'Проверяем probes, агрегируем прогоны и confidence interval';
     case UI_STATES.COMPLETE: return 'Опубликован только валидированный финальный результат';
-    case UI_STATES.CANCELLING: return 'Завершаем активные запросы';
     case UI_STATES.CANCELLED: return 'Частичные значения отброшены';
     case UI_STATES.ERROR: return 'Неполный результат не публикуется как финальный';
     default: return '';
@@ -146,12 +139,13 @@ function setAdvancedControlsDisabled(disabled) {
 
 function syncControlsForState(uiState) {
   const active = ACTIVE_STATES.has(uiState);
-  els.stop.hidden = !active || uiState === UI_STATES.CANCELLING;
+  els.instrument?.setAttribute('aria-busy', String(active));
+  els.stop.hidden = !active;
   els.start.hidden = active;
   setAdvancedControlsDisabled(active);
 
   if (!active) {
-    els.start.disabled = uiState === UI_STATES.BOOTING || uiState === UI_STATES.SERVER_READY;
+    els.start.disabled = uiState === UI_STATES.CONNECTING;
     if (!state.initialized && uiState === UI_STATES.ERROR) els.start.textContent = 'Повторить подключение';
     else if ([UI_STATES.COMPLETE, UI_STATES.CANCELLED, UI_STATES.ERROR].includes(uiState)) els.start.textContent = 'Повторить тест';
     else els.start.textContent = 'Начать тест';
@@ -159,13 +153,13 @@ function syncControlsForState(uiState) {
 }
 
 const machine = createStateMachine({
-  initial: UI_STATES.BOOTING,
+  initial: UI_STATES.CONNECTING,
   onChange({ current, meta, detail }) {
     document.body.dataset.appState = current;
     els.phase.textContent = meta.label;
     els.phaseDescription.textContent = detail.description || phaseDescriptionFor(current);
     syncControlsForState(current);
-    if ([UI_STATES.LATENCY, UI_STATES.CALIBRATING_DOWNLOAD, UI_STATES.CALIBRATING_UPLOAD, UI_STATES.ANALYZING].includes(current)) {
+    if ([UI_STATES.LATENCY, UI_STATES.DOWNLOAD, UI_STATES.UPLOAD, UI_STATES.ANALYZING].includes(current)) {
       setLiveSpeed(null);
     }
     if (ANNOUNCED_STATES.has(current)) announce(meta.announcement);
@@ -185,8 +179,9 @@ function api(path, base = state.apiBase) {
 }
 
 function setLiveSpeed(value) {
-  els.speed.textContent = Number.isFinite(value) ? formatThroughput(value) : '—';
-  els.liveUnit.textContent = 'Mbps';
+  const display = formatThroughputDisplay(value);
+  els.speed.textContent = display.value;
+  els.liveUnit.textContent = display.unit;
 }
 
 function setLivePing(value) {
@@ -209,6 +204,7 @@ class TelemetryPresenter {
     this.latestSpeed = null;
     this.latestPing = null;
     this.numericTimer = null;
+    this.renderCount = 0;
   }
 
   publishSpeed(value) {
@@ -229,7 +225,8 @@ class TelemetryPresenter {
       this.numericTimer = null;
       if (this.latestSpeed != null) setLiveSpeed(this.latestSpeed);
       if (this.latestPing != null) setLivePing(this.latestPing);
-    }, 120);
+      this.renderCount += 1;
+    }, 125);
   }
 
   clearLiveSpeed() {
@@ -288,10 +285,10 @@ class ChartRenderer {
     if (this.colors) return this.colors;
     const styles = getComputedStyle(document.documentElement);
     this.colors = {
-      down: styles.getPropertyValue('--accent-download').trim() || '#1557b0',
-      up: styles.getPropertyValue('--accent-upload').trim() || '#2f6f5e',
-      rule: styles.getPropertyValue('--rule').trim() || '#dedfda',
-      muted: styles.getPropertyValue('--muted').trim() || '#72767b',
+      down: styles.getPropertyValue('--download').trim() || '#245da8',
+      up: styles.getPropertyValue('--upload').trim() || '#356c5d',
+      rule: styles.getPropertyValue('--rule').trim() || '#d9dad6',
+      muted: styles.getPropertyValue('--muted').trim() || '#73777c',
     };
     return this.colors;
   }
@@ -300,7 +297,7 @@ class ChartRenderer {
     const rect = this.frame.getBoundingClientRect();
     const width = Math.max(1, Math.round(rect.width));
     const height = 220;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
     if (width === this.cssWidth && height === this.cssHeight && dpr === this.dpr) return false;
     this.cssWidth = width;
     this.cssHeight = height;
@@ -366,7 +363,7 @@ class ChartRenderer {
       if (!series.length) return;
       ctx.strokeStyle = stroke;
       ctx.lineWidth = 1.5;
-      ctx.lineJoin = 'round';
+      ctx.lineJoin = 'miter';
       ctx.beginPath();
       let previous = null;
       for (const point of series) {
@@ -404,6 +401,8 @@ function resetResultText() {
     'downRuns', 'upRuns', 'outliers', 'streams', 'payload', 'protocol', 'family', 'measurementNode',
     'downloadTiming', 'uploadTiming', 'pressure',
   ].forEach((key) => { els[key].textContent = '—'; });
+  els.downUnit.textContent = 'Mbps';
+  els.upUnit.textContent = 'Mbps';
 }
 
 function resetResults() {
@@ -414,6 +413,7 @@ function resetResults() {
   presenter.reset();
   resetResultText();
   els.qualitySection.hidden = true;
+  els.qualitySection.open = false;
   els.expertDetails.hidden = true;
   els.expertDetails.open = false;
   els.errorPanel.hidden = true;
@@ -427,6 +427,7 @@ function clearPartialResults() {
   resetResultText();
   presenter.reset();
   els.qualitySection.hidden = true;
+  els.qualitySection.open = false;
   els.expertDetails.hidden = true;
   els.expertDetails.open = false;
 }
@@ -760,15 +761,13 @@ async function uploadRun(totalBytes, streams, runToken, options = {}) {
     : fallbackUploadRun(totalBytes, streams, runToken, options);
 }
 
-async function warmUp(kind, streams, runToken, resumeState) {
-  const warmState = kind === 'down' ? UI_STATES.WARMING_DOWNLOAD : UI_STATES.WARMING_UPLOAD;
-  transition(warmState);
+async function warmUp(kind, streams, runToken) {
+  setPhaseDetail(`${kind === 'down' ? 'Download' : 'Upload'} · подготовка измерительного пути`);
   const bytes = Math.min(512 * 1024 * streams, 4 * MIB);
   if (kind === 'down') await downloadRun(bytes, streams, runToken, { record: false, account: false });
   else await uploadRun(bytes, streams, runToken, { record: false, account: false });
   await sleep(120);
   assertRunActive(runToken);
-  transition(resumeState);
 }
 
 function autoStreamCandidates() {
@@ -777,11 +776,12 @@ function autoStreamCandidates() {
 }
 
 async function calibrate(kind, runToken) {
-  const calibrationState = kind === 'down' ? UI_STATES.CALIBRATING_DOWNLOAD : UI_STATES.CALIBRATING_UPLOAD;
   const requested = state.connections;
+  setPhaseDetail(`${kind === 'down' ? 'Download' : 'Upload'} · подбираем потоки и измерительный объём`);
   if (requested !== 'auto') {
     const streams = Number(requested);
-    await warmUp(kind, streams, runToken, calibrationState);
+    await warmUp(kind, streams, runToken);
+    setPhaseDetail(`${kind === 'down' ? 'Download' : 'Upload'} · калибровка ${streams} ${streams === 1 ? 'потока' : 'потоков'}`);
     const calibrationBytes = Math.min(4 * MIB * streams, 16 * MIB, state.capabilities.maxTransferBytes);
     const result = kind === 'down'
       ? await downloadRun(calibrationBytes, streams, runToken, { record: false })
@@ -790,7 +790,7 @@ async function calibrate(kind, runToken) {
   }
 
   let streams = 1;
-  await warmUp(kind, streams, runToken, calibrationState);
+  await warmUp(kind, streams, runToken);
   let calibrationBytes = Math.min(4 * MIB, state.capabilities.maxTransferBytes);
   let result = kind === 'down'
     ? await downloadRun(calibrationBytes, streams, runToken, { record: false })
@@ -800,7 +800,8 @@ async function calibrate(kind, runToken) {
 
   for (const candidate of autoStreamCandidates()) {
     assertRunActive(runToken);
-    await warmUp(kind, candidate, runToken, calibrationState);
+    setPhaseDetail(`${kind === 'down' ? 'Download' : 'Upload'} · проверяем ${candidate} потока`);
+    await warmUp(kind, candidate, runToken);
     calibrationBytes = chooseAdaptiveBytes(bestMbps, {
       minBytes: 4 * MIB,
       maxBytes: Math.min(24 * MIB, state.capabilities.maxTransferBytes),
@@ -833,8 +834,6 @@ async function collectLoadedLatency(flag, label, runToken) {
 }
 
 async function runMainThroughput(kind, calibration, runToken) {
-  const phaseState = kind === 'down' ? UI_STATES.DOWNLOADING : UI_STATES.UPLOADING;
-  transition(phaseState);
   const targetSeconds = state.precise ? 6.5 : 5;
   const manualBytes = state.sizeMode === 'manual' ? state.sizeMB * MB : null;
   const totalBytes = manualBytes ?? chooseAdaptiveBytes(calibration.mbps, {
@@ -852,8 +851,7 @@ async function runMainThroughput(kind, calibration, runToken) {
 
   for (let run = 0; run < runs; run += 1) {
     assertRunActive(runToken);
-    setPhaseDetail(`${kind === 'down' ? 'Download' : 'Upload'} · основной прогон ${run + 1} из ${runs}`);
-    await warmUp(kind, calibration.streams, runToken, phaseState);
+    await warmUp(kind, calibration.streams, runToken);
     setPhaseDetail(`${kind === 'down' ? 'Download' : 'Upload'} · основной прогон ${run + 1} из ${runs}`);
     const flag = { active: true };
     const sampler = collectLoadedLatency(flag, kind, runToken);
@@ -964,8 +962,12 @@ function seriesDescription(label, series) {
 
 function renderFinalResult(result) {
   const { idle, download, upload, quality, evidence, pressure } = result;
-  els.down.textContent = formatThroughput(download.summary?.medianMbps);
-  els.up.textContent = formatThroughput(upload.summary?.medianMbps);
+  const downDisplay = formatThroughputDisplay(download.summary?.medianMbps);
+  const upDisplay = formatThroughputDisplay(upload.summary?.medianMbps);
+  els.down.textContent = downDisplay.value;
+  els.downUnit.textContent = downDisplay.unit;
+  els.up.textContent = upDisplay.value;
+  els.upUnit.textContent = upDisplay.unit;
   els.ping.textContent = formatLatency(idle.summary.p50);
   els.jitter.textContent = formatLatency(idle.summary.jitter);
   els.probeLoss.textContent = formatPercent(idle.probeLossPct);
@@ -1000,7 +1002,9 @@ function renderFinalResult(result) {
 
   els.errorPanel.hidden = true;
   els.qualitySection.hidden = false;
+  els.qualitySection.open = false;
   els.expertDetails.hidden = false;
+  els.expertDetails.open = false;
 
   const invalidLoaded = [download.loaded.qualification, upload.loaded.qualification].filter((item) => !item.valid);
   const loadedFailures = download.loaded.failed + upload.loaded.failed;
@@ -1019,6 +1023,7 @@ function renderError(info) {
   els.errorDiagnostic.textContent = info.diagnostic;
   els.errorPanel.hidden = false;
   setNotice('');
+  window.setTimeout(() => els.start.focus({ preventScroll: true }), 0);
 }
 
 async function startTest() {
@@ -1041,14 +1046,14 @@ async function startTest() {
     assertRunActive(runToken);
     const idle = await idleLatencyTest(runToken);
 
-    transition(UI_STATES.CALIBRATING_DOWNLOAD);
+    transition(UI_STATES.DOWNLOAD);
     const downCalibration = await calibrate('down', runToken);
     const downResult = await runMainThroughput('down', downCalibration, runToken);
 
     await sleep(250);
     assertRunActive(runToken);
     presenter.clearLiveSpeed();
-    transition(UI_STATES.CALIBRATING_UPLOAD);
+    transition(UI_STATES.UPLOAD);
     const upCalibration = await calibrate('up', runToken);
     const upResult = await runMainThroughput('up', upCalibration, runToken);
 
@@ -1089,20 +1094,20 @@ async function startTest() {
     state.finalResult = finalResult;
     renderFinalResult(finalResult);
     transition(UI_STATES.COMPLETE);
+    window.setTimeout(() => els.start.focus({ preventScroll: true }), 0);
   } catch (error) {
     const cancelled = isAbort(error) || !state.running || runToken !== state.runToken;
     if (cancelled) {
       const lifecycle = state.cancelReason === 'lifecycle' || state.lifecycleInvalidated;
       if (lifecycle) {
         const info = classifyMeasurementError(error, { lifecycleInvalidated: true });
-        if (machine.current !== UI_STATES.CANCELLING && canTransition(machine.current, UI_STATES.CANCELLING)) transition(UI_STATES.CANCELLING);
         if (canTransition(machine.current, UI_STATES.ERROR)) transition(UI_STATES.ERROR);
         renderError(info);
       } else {
         clearPartialResults();
-        if (machine.current !== UI_STATES.CANCELLING && canTransition(machine.current, UI_STATES.CANCELLING)) transition(UI_STATES.CANCELLING);
         if (canTransition(machine.current, UI_STATES.CANCELLED)) transition(UI_STATES.CANCELLED);
         setNotice('Тест отменён. Частичные метрики отброшены и не считаются финальным результатом.', 'neutral');
+        window.setTimeout(() => els.start.focus({ preventScroll: true }), 0);
       }
     } else {
       console.error(error);
@@ -1123,7 +1128,7 @@ function stopTest(reason = 'user') {
   if (!state.running) return;
   state.cancelReason = reason;
   if (reason === 'lifecycle') state.lifecycleInvalidated = true;
-  if (canTransition(machine.current, UI_STATES.CANCELLING)) transition(UI_STATES.CANCELLING);
+  setPhaseDetail('Останавливаем активные запросы');
   state.running = false;
   state.runToken += 1;
   abortActiveRequests();
@@ -1176,12 +1181,12 @@ function detectNextHopProtocol(path) {
 async function initialize() {
   if (state.running) return;
   state.initialized = false;
-  if (machine.current !== UI_STATES.BOOTING && canTransition(machine.current, UI_STATES.BOOTING)) transition(UI_STATES.BOOTING);
-  syncControlsForState(UI_STATES.BOOTING);
+  if (machine.current !== UI_STATES.CONNECTING && canTransition(machine.current, UI_STATES.CONNECTING)) transition(UI_STATES.CONNECTING);
+  syncControlsForState(UI_STATES.CONNECTING);
   setServerStatus('Connecting…', 'connecting');
   els.errorPanel.hidden = true;
   const wakingTimer = window.setTimeout(() => {
-    if (!state.initialized && machine.current === UI_STATES.BOOTING) setServerStatus('Measurement node waking…', 'connecting');
+    if (!state.initialized && machine.current === UI_STATES.CONNECTING) setServerStatus('Measurement node waking…', 'connecting');
   }, 900);
 
   try {
@@ -1195,8 +1200,7 @@ async function initialize() {
     els.nodeInfo.textContent = `${node.id || 'measurement node'} · ${state.serverInfo.clientFamily || 'network'}`;
     els.footerInfo.textContent = `${state.nextHopProtocol || state.serverInfo.protocol || 'HTTP'} · ${state.serverInfo.clientFamily || 'network'}`;
     applyPayloadCapabilityLimits();
-    transition(UI_STATES.SERVER_READY);
-    transition(UI_STATES.IDLE);
+    transition(UI_STATES.READY);
   } catch (error) {
     console.error(error);
     state.initialized = false;
@@ -1251,8 +1255,10 @@ window.__PSL_DIAGNOSTICS__ = Object.freeze({
   getState: () => machine.current,
   getFinalResult: () => state.finalResult,
   getChartRenderCount: () => chartRenderer.renderCount,
+  getTelemetryRenderCount: () => presenter.renderCount,
+  getPendingControllerCount: () => state.aborters.size,
   supportsStreamingUpload,
 });
 
-syncControlsForState(UI_STATES.BOOTING);
+syncControlsForState(UI_STATES.CONNECTING);
 initialize();

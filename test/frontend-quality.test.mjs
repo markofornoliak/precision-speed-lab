@@ -24,14 +24,26 @@ test('frontend asset budget stays intentionally small', () => {
   assert.ok(htmlBytes <= 22 * 1024, `HTML budget exceeded: ${htmlBytes} bytes`);
 });
 
-test('active-measurement code contains no decorative animation loop or interval timer', () => {
+test('active-measurement presentation is rate-limited and Canvas remains on-demand', () => {
   const app = read('public/app.js');
-  assert.equal(/requestAnimationFrame\s*\(/.test(app), false, 'requestAnimationFrame loop is not allowed in the measurement UI');
+  assert.equal(/requestAnimationFrame\s*\(/.test(app), false, 'animation loops are not allowed in the measurement UI');
   assert.equal(/setInterval\s*\(/.test(app), false, 'interval timers are not allowed in the measurement UI');
   assert.equal(/drawChart\s*\(/.test(app), false, 'legacy direct chart rendering must not return');
   assert.match(app, /class TelemetryPresenter/);
+  assert.match(app, /125\)/, 'visible numeric presentation should remain around 8 Hz');
   assert.match(app, /class ChartRenderer/);
   assert.match(app, /ResizeObserver/);
+  assert.match(app, /if \(!els\.expertDetails\.open \|\| els\.expertDetails\.hidden\) return/);
+});
+
+test('the public state machine contains no calibration or warm-up presentation states', () => {
+  const ui = read('public/ui-core.js');
+  for (const forbidden of ['BOOTING', 'SERVER_READY', 'IDLE', 'CALIBRATING_', 'WARMING_', 'DOWNLOADING', 'UPLOADING', 'CANCELLING']) {
+    assert.equal(ui.includes(forbidden), false, `internal phase leaked into UI state machine: ${forbidden}`);
+  }
+  for (const required of ['CONNECTING', 'READY', 'PREPARING', 'LATENCY', 'DOWNLOAD', 'UPLOAD', 'ANALYZING', 'COMPLETE', 'CANCELLED', 'ERROR']) {
+    assert.match(ui, new RegExp(`\\b${required}\\b`));
+  }
 });
 
 test('measurement semantics remain explicitly honest in user-facing copy', () => {
@@ -39,9 +51,20 @@ test('measurement semantics remain explicitly honest in user-facing copy', () =>
   assert.match(html, /HTTP probe loss/);
   assert.match(html, /не L3 loss/);
   assert.match(html, /Variation · download/);
-  assert.match(html, /<span>CV<\/span>/);
+  assert.match(html, /CV · lower is steadier/);
   assert.match(html, /95% CI/);
+  assert.match(html, /Это не искусственный stability score/);
   assert.doesNotMatch(html, /accuracy percentage/i);
+});
+
+test('visual system avoids decorative effects and supports motion and device constraints', () => {
+  const css = read('public/styles.css');
+  assert.doesNotMatch(css, /linear-gradient|radial-gradient|conic-gradient|backdrop-filter/i);
+  assert.match(css, /prefers-reduced-motion/);
+  assert.match(css, /env\(safe-area-inset-top\)/);
+  assert.match(css, /env\(safe-area-inset-bottom\)/);
+  assert.match(css, /font-variant-numeric:\s*tabular-nums/);
+  assert.match(css, /min-width:\s*320px/);
 });
 
 test('accessible controls use native radio, select and switch semantics', () => {
@@ -49,6 +72,7 @@ test('accessible controls use native radio, select and switch semantics', () => 
   assert.match(html, /type="radio" name="payload"/);
   assert.match(html, /<select id="connections">/);
   assert.match(html, /type="checkbox" role="switch"/);
+  assert.match(html, /aria-live="polite"/);
   assert.doesNotMatch(html, /role="radiogroup"[^>]*>[\s\S]{0,500}<button/);
 });
 

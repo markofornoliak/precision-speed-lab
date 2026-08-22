@@ -1,58 +1,40 @@
 export const UI_STATES = Object.freeze({
-  BOOTING: 'BOOTING',
-  SERVER_READY: 'SERVER_READY',
-  IDLE: 'IDLE',
+  CONNECTING: 'CONNECTING',
+  READY: 'READY',
   PREPARING: 'PREPARING',
   LATENCY: 'LATENCY',
-  CALIBRATING_DOWNLOAD: 'CALIBRATING_DOWNLOAD',
-  WARMING_DOWNLOAD: 'WARMING_DOWNLOAD',
-  DOWNLOADING: 'DOWNLOADING',
-  CALIBRATING_UPLOAD: 'CALIBRATING_UPLOAD',
-  WARMING_UPLOAD: 'WARMING_UPLOAD',
-  UPLOADING: 'UPLOADING',
+  DOWNLOAD: 'DOWNLOAD',
+  UPLOAD: 'UPLOAD',
   ANALYZING: 'ANALYZING',
   COMPLETE: 'COMPLETE',
-  CANCELLING: 'CANCELLING',
   CANCELLED: 'CANCELLED',
   ERROR: 'ERROR',
 });
 
 export const STATE_META = Object.freeze({
-  BOOTING: { label: 'Connecting', announcement: 'Connecting to the measurement service', emphasis: 'setup' },
-  SERVER_READY: { label: 'Measurement node ready', announcement: 'Measurement node ready', emphasis: 'setup' },
-  IDLE: { label: 'Ready', announcement: 'Ready to start a measurement', emphasis: 'idle' },
+  CONNECTING: { label: 'Connecting', announcement: 'Connecting to the measurement service', emphasis: 'setup' },
+  READY: { label: 'Ready', announcement: 'Ready to start a measurement', emphasis: 'idle' },
   PREPARING: { label: 'Preparing', announcement: 'Test started', emphasis: 'active' },
-  LATENCY: { label: 'Measuring latency', announcement: 'Measuring latency', emphasis: 'latency' },
-  CALIBRATING_DOWNLOAD: { label: 'Calibrating download', announcement: 'Calibrating download', emphasis: 'download' },
-  WARMING_DOWNLOAD: { label: 'Warming download path', announcement: 'Preparing download measurement', emphasis: 'download' },
-  DOWNLOADING: { label: 'Download', announcement: 'Measuring download', emphasis: 'download' },
-  CALIBRATING_UPLOAD: { label: 'Calibrating upload', announcement: 'Calibrating upload', emphasis: 'upload' },
-  WARMING_UPLOAD: { label: 'Warming upload path', announcement: 'Preparing upload measurement', emphasis: 'upload' },
-  UPLOADING: { label: 'Upload', announcement: 'Measuring upload', emphasis: 'upload' },
+  LATENCY: { label: 'Latency', announcement: 'Measuring latency', emphasis: 'latency' },
+  DOWNLOAD: { label: 'Download', announcement: 'Measuring download', emphasis: 'download' },
+  UPLOAD: { label: 'Upload', announcement: 'Measuring upload', emphasis: 'upload' },
   ANALYZING: { label: 'Analyzing', announcement: 'Analyzing measurement', emphasis: 'analysis' },
   COMPLETE: { label: 'Complete', announcement: 'Measurement complete', emphasis: 'complete' },
-  CANCELLING: { label: 'Stopping', announcement: 'Stopping measurement', emphasis: 'active' },
   CANCELLED: { label: 'Cancelled', announcement: 'Measurement cancelled', emphasis: 'idle' },
-  ERROR: { label: 'Measurement unavailable', announcement: 'Measurement failed', emphasis: 'error' },
+  ERROR: { label: 'Unavailable', announcement: 'Measurement failed', emphasis: 'error' },
 });
 
 const TRANSITIONS = Object.freeze({
-  BOOTING: ['SERVER_READY', 'ERROR'],
-  SERVER_READY: ['IDLE', 'ERROR', 'BOOTING'],
-  IDLE: ['PREPARING', 'BOOTING', 'ERROR'],
-  PREPARING: ['LATENCY', 'CANCELLING', 'ERROR'],
-  LATENCY: ['CALIBRATING_DOWNLOAD', 'CANCELLING', 'ERROR'],
-  CALIBRATING_DOWNLOAD: ['WARMING_DOWNLOAD', 'DOWNLOADING', 'CANCELLING', 'ERROR'],
-  WARMING_DOWNLOAD: ['CALIBRATING_DOWNLOAD', 'DOWNLOADING', 'CANCELLING', 'ERROR'],
-  DOWNLOADING: ['WARMING_DOWNLOAD', 'CALIBRATING_UPLOAD', 'CANCELLING', 'ERROR'],
-  CALIBRATING_UPLOAD: ['WARMING_UPLOAD', 'UPLOADING', 'CANCELLING', 'ERROR'],
-  WARMING_UPLOAD: ['CALIBRATING_UPLOAD', 'UPLOADING', 'CANCELLING', 'ERROR'],
-  UPLOADING: ['WARMING_UPLOAD', 'ANALYZING', 'CANCELLING', 'ERROR'],
-  ANALYZING: ['COMPLETE', 'CANCELLING', 'ERROR'],
-  COMPLETE: ['PREPARING', 'IDLE', 'BOOTING'],
-  CANCELLING: ['CANCELLED', 'ERROR'],
-  CANCELLED: ['PREPARING', 'IDLE', 'BOOTING'],
-  ERROR: ['PREPARING', 'IDLE', 'BOOTING'],
+  CONNECTING: ['READY', 'ERROR'],
+  READY: ['PREPARING', 'CONNECTING', 'ERROR'],
+  PREPARING: ['LATENCY', 'CANCELLED', 'ERROR'],
+  LATENCY: ['DOWNLOAD', 'CANCELLED', 'ERROR'],
+  DOWNLOAD: ['UPLOAD', 'CANCELLED', 'ERROR'],
+  UPLOAD: ['ANALYZING', 'CANCELLED', 'ERROR'],
+  ANALYZING: ['COMPLETE', 'CANCELLED', 'ERROR'],
+  COMPLETE: ['PREPARING', 'READY', 'CONNECTING'],
+  CANCELLED: ['PREPARING', 'READY', 'CONNECTING'],
+  ERROR: ['PREPARING', 'READY', 'CONNECTING'],
 });
 
 export function canTransition(from, to) {
@@ -60,7 +42,7 @@ export function canTransition(from, to) {
   return Boolean(TRANSITIONS[from]?.includes(to));
 }
 
-export function createStateMachine({ initial = UI_STATES.BOOTING, onChange = () => {} } = {}) {
+export function createStateMachine({ initial = UI_STATES.CONNECTING, onChange = () => {} } = {}) {
   if (!STATE_META[initial]) throw new RangeError(`Unknown initial UI state: ${initial}`);
   let current = initial;
   return Object.freeze({
@@ -79,10 +61,21 @@ export function createStateMachine({ initial = UI_STATES.BOOTING, onChange = () 
 
 export function formatThroughput(value) {
   if (!Number.isFinite(value) || value < 0) return '—';
-  if (value >= 1000) return value.toFixed(1);
   if (value >= 100) return value.toFixed(1);
   if (value >= 10) return value.toFixed(1);
   return value.toFixed(2);
+}
+
+export function formatThroughputDisplay(value) {
+  if (!Number.isFinite(value) || value < 0) return Object.freeze({ value: '—', unit: 'Mbps' });
+  if (value >= 10_000) {
+    const gbps = value / 1000;
+    return Object.freeze({
+      value: gbps >= 100 ? gbps.toFixed(0) : gbps.toFixed(1),
+      unit: 'Gbps',
+    });
+  }
+  return Object.freeze({ value: formatThroughput(value), unit: 'Mbps' });
 }
 
 export function formatLatency(value) {

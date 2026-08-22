@@ -10,7 +10,7 @@ async function preparePage(page) {
     });
   });
   await page.goto('/');
-  await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__?.getState())).toBe('IDLE');
+  await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__?.getState())).toBe('READY');
 
   const settings = page.locator('#settingsDetails');
   if (!(await settings.getAttribute('open'))) await settings.locator('summary').click();
@@ -35,6 +35,7 @@ async function expectCleanCancellation(page, phase) {
   expect(pageErrors).toEqual([]);
   expect(await page.evaluate(() => window.__PSL_UNHANDLED_REJECTIONS__)).toEqual([]);
   expect(await page.evaluate(() => window.__PSL_DIAGNOSTICS__.getFinalResult())).toBeNull();
+  expect(await page.evaluate(() => window.__PSL_DIAGNOSTICS__.getPendingControllerCount())).toBe(0);
 }
 
 test('download cancellation settles concurrent loaded-latency sampler without rejection', async ({ page }) => {
@@ -43,7 +44,7 @@ test('download cancellation settles concurrent loaded-latency sampler without re
     try { await route.continue(); } catch {}
   });
   await preparePage(page);
-  await expectCleanCancellation(page, 'DOWNLOADING');
+  await expectCleanCancellation(page, 'DOWNLOAD');
 });
 
 test('upload cancellation settles concurrent loaded-latency sampler without rejection @safari', async ({ page }) => {
@@ -52,5 +53,5 @@ test('upload cancellation settles concurrent loaded-latency sampler without reje
     try { await route.continue(); } catch {}
   });
   await preparePage(page);
-  await expectCleanCancellation(page, 'UPLOADING');
+  await expectCleanCancellation(page, 'UPLOAD');
 });

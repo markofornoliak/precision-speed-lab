@@ -3,40 +3,47 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#f8f8f6" />
+  <meta name="theme-color" content="#f7f7f5" />
+  <meta name="color-scheme" content="light" />
   <meta name="description" content="Precision Speed Lab — точное браузерное измерение пропускной способности, задержки и поведения соединения под нагрузкой." />
   <title>Precision Speed Lab</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
-<body data-app-state="BOOTING">
+<body data-app-state="CONNECTING">
   <header class="topbar">
-    <a class="brand" href="/" aria-label="Precision Speed Lab, главная">
-      <span class="brand-mark" aria-hidden="true">PSL</span>
-      <span>Precision Speed Lab</span>
-    </a>
-    <div class="server-state" id="serverState" data-status="connecting">
+    <a class="brand" href="/" aria-label="Precision Speed Lab, главная">Precision Speed Lab</a>
+    <div class="server-state" id="serverState" data-status="connecting" aria-label="Статус измерительного узла">
       <span class="status-dot" aria-hidden="true"></span>
       <span id="serverStatus">Connecting…</span>
     </div>
   </header>
 
   <main class="shell">
-    <section class="instrument" aria-labelledby="pageTitle">
-      <div class="instrument-heading">
-        <div>
-          <p class="kicker">Network performance instrument</p>
-          <h1 id="pageTitle">Точное измерение соединения</h1>
-        </div>
-        <p class="trust-line">Реальные байты · повторные прогоны · server receive timing</p>
-      </div>
+    <h1 class="sr-only" id="pageTitle">Precision Speed Lab — измерение производительности соединения</h1>
 
+    <section class="instrument" id="instrument" aria-labelledby="pageTitle" aria-busy="true">
       <div class="phase-block" aria-describedby="phaseDescription">
         <span class="phase-label" id="phaseLabel">Connecting</span>
         <span class="phase-description" id="phaseDescription">Подготавливаем измерительный узел</span>
         <div class="phase-progress" aria-hidden="true"><span></span></div>
       </div>
 
-      <div class="live-readout" aria-label="Текущая пропускная способность">
+      <dl class="primary-readings" aria-label="Основные результаты">
+        <div class="primary-reading primary-download">
+          <dt>Download</dt>
+          <dd><strong id="downloadValue">—</strong><span id="downloadUnit">Mbps</span></dd>
+        </div>
+        <div class="primary-reading primary-upload">
+          <dt>Upload</dt>
+          <dd><strong id="uploadValue">—</strong><span id="uploadUnit">Mbps</span></dd>
+        </div>
+        <div class="primary-reading primary-ping">
+          <dt>Ping</dt>
+          <dd><strong id="pingValue">—</strong><span>ms</span></dd>
+        </div>
+      </dl>
+
+      <div class="live-readout" aria-hidden="true">
         <strong id="speedValue">—</strong>
         <span class="live-unit">Mbps</span>
       </div>
@@ -46,25 +53,10 @@
         <button class="secondary-action" id="stopBtn" type="button" hidden>Остановить</button>
       </div>
 
-      <div class="essential-results" aria-label="Основные результаты">
-        <div class="essential-metric">
-          <span class="metric-label">Download</span>
-          <div class="metric-reading"><strong id="downloadValue">—</strong><span>Mbps</span></div>
-        </div>
-        <div class="essential-metric">
-          <span class="metric-label">Upload</span>
-          <div class="metric-reading"><strong id="uploadValue">—</strong><span>Mbps</span></div>
-        </div>
-        <div class="essential-metric">
-          <span class="metric-label">Ping</span>
-          <div class="metric-reading"><strong id="pingValue">—</strong><span>ms</span></div>
-        </div>
-      </div>
-
       <p class="measurement-notice" id="measurementNotice" hidden></p>
 
       <details class="advanced-settings" id="settingsDetails">
-        <summary>Advanced settings</summary>
+        <summary>Параметры</summary>
         <div class="settings-body">
           <fieldset class="setting-group" id="sizeSelector">
             <legend>Измерительный объём</legend>
@@ -82,7 +74,7 @@
               <label><input type="radio" name="payload" value="250" /><span>250 MB</span></label>
               <label><input type="radio" name="payload" value="500" /><span>500 MB</span></label>
             </div>
-            <p class="setting-note">Auto подбирает payload по калибровочной скорости и целевой длительности. Ручное значение не меняет математику измерения.</p>
+            <p class="setting-note">Auto подбирает payload по калибровочной скорости и целевой длительности. Ручной объём не меняет математику измерения.</p>
           </fieldset>
 
           <div class="settings-row">
@@ -105,35 +97,34 @@
       </details>
     </section>
 
-    <section class="quality-section" id="qualitySection" hidden aria-labelledby="qualityTitle">
-      <div class="section-heading">
-        <div>
-          <p class="kicker">Connection quality</p>
-          <h2 id="qualityTitle">Поведение соединения</h2>
-        </div>
-        <p>Ниже — лучше для latency, loss, bufferbloat и CV.</p>
+    <details class="quality-section disclosure" id="qualitySection" hidden>
+      <summary>
+        <span>Connection quality</span>
+        <span class="summary-hint">Loaded latency, variation, loss, bufferbloat</span>
+      </summary>
+      <div class="disclosure-body">
+        <dl class="quality-grid">
+          <div><dt>Jitter</dt><dd><strong id="jitterValue">—</strong><span>ms</span></dd></div>
+          <div><dt>Loaded latency · download</dt><dd><strong id="loadedDownValue">—</strong><span>ms · P50</span></dd></div>
+          <div><dt>Loaded latency · upload</dt><dd><strong id="loadedUpValue">—</strong><span>ms · P50</span></dd></div>
+          <div><dt>HTTP probe loss</dt><dd><strong id="probeLossValue">—</strong><span>не L3 loss</span></dd></div>
+          <div><dt>Variation · download</dt><dd><strong id="stabilityDownValue">—</strong><span>CV · lower is steadier</span></dd></div>
+          <div><dt>Variation · upload</dt><dd><strong id="stabilityUpValue">—</strong><span>CV · lower is steadier</span></dd></div>
+          <div class="quality-wide"><dt>Bufferbloat increase</dt><dd><strong id="bufferbloatValue">—</strong><span>worst loaded P50 − idle P50</span></dd></div>
+        </dl>
       </div>
-      <dl class="quality-grid">
-        <div><dt>Jitter</dt><dd><strong id="jitterValue">—</strong><span>ms</span></dd></div>
-        <div><dt>Loaded latency · download</dt><dd><strong id="loadedDownValue">—</strong><span>ms · P50</span></dd></div>
-        <div><dt>Loaded latency · upload</dt><dd><strong id="loadedUpValue">—</strong><span>ms · P50</span></dd></div>
-        <div><dt>HTTP probe loss</dt><dd><strong id="probeLossValue">—</strong><span>не L3 loss</span></dd></div>
-        <div><dt>Variation · download</dt><dd><strong id="stabilityDownValue">—</strong><span>CV</span></dd></div>
-        <div><dt>Variation · upload</dt><dd><strong id="stabilityUpValue">—</strong><span>CV</span></dd></div>
-        <div class="quality-wide"><dt>Bufferbloat increase</dt><dd><strong id="bufferbloatValue">—</strong><span>worst loaded P50 − idle P50</span></dd></div>
-      </dl>
-    </section>
+    </details>
 
-    <details class="expert-evidence" id="expertDetails" hidden>
+    <details class="expert-evidence disclosure" id="expertDetails" hidden>
       <summary>
         <span>Expert evidence</span>
-        <span>Percentiles, confidence intervals, runs and methodology</span>
+        <span class="summary-hint">Percentiles, confidence intervals, runs, protocol</span>
       </summary>
-      <div class="expert-body">
+      <div class="expert-body disclosure-body">
         <section aria-labelledby="latencyTitle">
-          <div class="section-heading compact">
+          <div class="section-heading">
             <div>
-              <p class="kicker">Idle RTT distribution</p>
+              <p class="kicker">Idle HTTP RTT distribution</p>
               <h2 id="latencyTitle">Latency percentiles</h2>
             </div>
             <span class="node-info" id="nodeInfo">measurement node</span>
@@ -147,10 +138,10 @@
         </section>
 
         <section class="chart-section" aria-labelledby="chartTitle">
-          <div class="section-heading compact">
+          <div class="section-heading">
             <div>
-              <p class="kicker">Steady-state telemetry</p>
-              <h2 id="chartTitle">Пропускная способность во времени</h2>
+              <p class="kicker">Measured steady-state telemetry</p>
+              <h2 id="chartTitle">Throughput over time</h2>
             </div>
             <div class="legend" aria-hidden="true"><span class="down-dot"></span>Download <span class="up-dot"></span>Upload</div>
           </div>
@@ -161,7 +152,7 @@
         </section>
 
         <section aria-labelledby="evidenceTitle">
-          <div class="section-heading compact">
+          <div class="section-heading">
             <div>
               <p class="kicker">Measurement evidence</p>
               <h2 id="evidenceTitle">Что вошло в итог</h2>
@@ -191,16 +182,16 @@
           <div class="method-list">
             <p><strong>Download.</strong> Фактически полученные байты делятся на browser wall-clock duration основного прогона после connection warm-up.</p>
             <p><strong>Upload.</strong> Основная скорость считается по общему monotonic receive-window на measurement server — от первого принятого байта до последнего. Время получения JSON-ответа не занижает результат.</p>
-            <p><strong>Latency.</strong> HTTP RTT. P50/P90/P95/P99 считаются по успешным idle probes. TCP может скрывать L3 packet loss, поэтому интерфейс показывает именно HTTP probe loss.</p>
+            <p><strong>Latency.</strong> Это HTTP RTT. P50/P90/P95/P99 считаются по успешным idle probes. TCP может скрывать L3 packet loss, поэтому здесь показан именно HTTP probe loss.</p>
             <p><strong>Loaded latency.</strong> Метрика публикуется только при достаточном числе успешных probes и приемлемой доле timeout. Bufferbloat — фактическая добавка loaded P50 к idle P50.</p>
-            <p><strong>Variation.</strong> Коэффициент вариации steady-state throughput samples; меньше — стабильнее. Финальная средняя скорость прогона в CV не смешивается.</p>
+            <p><strong>Variation.</strong> Коэффициент вариации steady-state throughput samples; меньше — стабильнее. Это не искусственный stability score.</p>
             <p><strong>Aggregation.</strong> Медиана повторных прогонов; при ≥5 прогонах грубые run-level выбросы могут исключаться MAD-фильтром. 95% CI — percentile bootstrap для медианы.</p>
           </div>
         </details>
       </div>
     </details>
 
-    <section class="error-panel" id="errorPanel" hidden role="alert" aria-labelledby="errorTitle">
+    <section class="error-panel" id="errorPanel" hidden role="alert" aria-labelledby="errorTitle" tabindex="-1">
       <p class="kicker">Measurement status</p>
       <h2 id="errorTitle">Measurement did not complete</h2>
       <p id="errorMessage"></p>
