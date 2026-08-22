@@ -858,14 +858,24 @@ async function runMainThroughput(kind, calibration, runToken) {
     const flag = { active: true };
     const sampler = collectLoadedLatency(flag, kind, runToken);
     let result;
+    let transferError = null;
     try {
       result = kind === 'down'
         ? await downloadRun(totalBytes, calibration.streams, runToken, { record: true, account: true })
         : await uploadRun(totalBytes, calibration.streams, runToken, { record: true, account: true });
+    } catch (error) {
+      transferError = error;
     } finally {
       flag.active = false;
     }
-    const loaded = await sampler;
+
+    let loaded;
+    try {
+      loaded = await sampler;
+    } catch (samplerError) {
+      if (!transferError) throw samplerError;
+    }
+    if (transferError) throw transferError;
     loadedSamples.push(...loaded.samples);
     loadedFailed += loaded.failed;
     loadedSent += loaded.sent;
