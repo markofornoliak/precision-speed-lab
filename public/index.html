@@ -50,16 +50,16 @@
         <article><span>Idle ping</span><strong id="pingValue">—</strong><small>ms · median RTT</small></article>
         <article><span>Jitter</span><strong id="jitterValue">—</strong><small>ms · mean |ΔRTT|</small></article>
         <article><span>Download</span><strong id="downloadValue">—</strong><small>Mbps · median run</small></article>
-        <article><span>Upload</span><strong id="uploadValue">—</strong><small>Mbps · median run</small></article>
+        <article><span>Upload</span><strong id="uploadValue">—</strong><small>Mbps · server receive window</small></article>
       </div>
 
       <div class="secondary-metrics" aria-label="Показатели под нагрузкой">
-        <article><span>Latency · download</span><strong id="loadedDownValue">—</strong><small>ms · P50</small></article>
-        <article><span>Latency · upload</span><strong id="loadedUpValue">—</strong><small>ms · P50</small></article>
+        <article><span>Latency · download</span><strong id="loadedDownValue">—</strong><small>ms · qualified P50</small></article>
+        <article><span>Latency · upload</span><strong id="loadedUpValue">—</strong><small>ms · qualified P50</small></article>
         <article><span>HTTP probe loss</span><strong id="probeLossValue">—</strong><small>не L3 packet loss</small></article>
-        <article><span>Bufferbloat</span><strong id="bufferbloatValue">—</strong><small>grade · loaded − idle</small></article>
-        <article><span>Stability · download</span><strong id="stabilityDownValue">—</strong><small>CV · ниже стабильнее</small></article>
-        <article><span>Stability · upload</span><strong id="stabilityUpValue">—</strong><small>CV · ниже стабильнее</small></article>
+        <article><span>Bufferbloat</span><strong id="bufferbloatValue">—</strong><small>max loaded P50 − idle P50</small></article>
+        <article><span>Stability · download</span><strong id="stabilityDownValue">—</strong><small>steady-state CV</small></article>
+        <article><span>Stability · upload</span><strong id="stabilityUpValue">—</strong><small>steady-state CV</small></article>
       </div>
 
       <div class="controls-panel">
@@ -158,9 +158,11 @@
         <h2 id="method-title">Что именно измеряется</h2>
       </div>
       <div class="method-list">
-        <p><strong>Throughput.</strong> Фактически полученные/принятые байты делятся на wall-clock duration основного прогона после connection warm-up.</p>
+        <p><strong>Download.</strong> Фактически полученные байты делятся на browser wall-clock duration основного прогона после connection warm-up.</p>
+        <p><strong>Upload.</strong> Основная скорость считается по общему monotonic receive-window на measurement server — от первого принятого байта до последнего — поэтому время получения JSON-ответа не занижает результат.</p>
         <p><strong>Latency.</strong> HTTP RTT; P50/P90/P95/P99 считаются по успешным idle probes. TCP может скрывать реальный L3 packet loss, поэтому интерфейс показывает только HTTP probe loss.</p>
-        <p><strong>Jitter.</strong> Среднее абсолютное изменение соседних RTT. <strong>Stability.</strong> Коэффициент вариации throughput samples, без искусственного «score».</p>
+        <p><strong>Loaded latency.</strong> Метрика публикуется только при достаточном количестве успешных probes и приемлемой доле timeout. Bufferbloat — это добавка P50 loaded latency к idle P50, без произвольной буквенной оценки.</p>
+        <p><strong>Jitter.</strong> Среднее абсолютное изменение соседних RTT. <strong>Stability.</strong> Коэффициент вариации steady-state throughput samples; финальная средняя скорость прогона в CV не смешивается.</p>
         <p><strong>Aggregation.</strong> Медиана повторных прогонов; при ≥5 прогонах грубые run-level выбросы могут исключаться MAD-фильтром. 95% CI — percentile bootstrap для медианы.</p>
       </div>
     </section>

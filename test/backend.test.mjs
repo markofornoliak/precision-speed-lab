@@ -58,6 +58,7 @@ test('health, capabilities, discovery and IPv4 awareness are coherent', async ()
     assert.deepEqual(body.recommendedSizesMiB, [1, 2]);
     assert.equal(body.features.uploadProgress, true);
     assert.equal(body.features.regionalServerDiscovery, true);
+    assert.equal(body.features.serverReceiveTiming, true);
 
     const discovery = await fetch(`${baseUrl}/api/servers`);
     const discoveryBody = await discovery.json();
@@ -102,7 +103,7 @@ test('download validation rejects missing, malformed and oversized byte counts',
   });
 });
 
-test('upload consumes bytes as a stream and reports exact server byte accounting', async () => {
+test('upload consumes bytes as a stream and reports exact server receive timing', async () => {
   await withServer(async (baseUrl) => {
     const bytes = 512 * 1024;
     const response = await fetch(`${baseUrl}/api/upload?id=${crypto.randomUUID()}`, {
@@ -113,9 +114,23 @@ test('upload consumes bytes as a stream and reports exact server byte accounting
     assert.equal(response.status, 200);
     const result = await response.json();
     assert.equal(result.received, bytes);
-    assert.ok(result.elapsedMs >= 0);
-    assert.ok(result.serverMeasuredMbps >= 0);
+    assert.ok(result.elapsedMs > 0);
+    assert.ok(result.serverMeasuredMbps > 0);
+    assert.match(result.receiveStartedNs, /^\d+$/);
+    assert.match(result.receiveEndedNs, /^\d+$/);
+    assert.ok(BigInt(result.receiveEndedNs) > BigInt(result.receiveStartedNs));
     assert.equal(Number(response.headers.get('x-test-bytes')), bytes);
+  });
+});
+
+test('zero-byte uploads are rejected instead of becoming a zero-speed measurement', async () => {
+  await withServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/upload`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: new Uint8Array(0),
+    });
+    assert.equal(response.status, 400);
   });
 });
 
@@ -224,6 +239,28 @@ test('request-rate limiter returns 429 without unbounded state', async () => {
     assert.equal(third.status, 429);
     assert.ok(Number(third.headers.get('retry-after')) >= 1);
   }, { maxRequestsPerWindow: 2 });
+});
+
+test('CORS preflight does not consume the measurement request quota', async () => {
+  await withServer(async (baseUrl) => {
+    for (let index = 0; index < 5; index += 1) {
+      const preflight = await fetch(`${baseUrl}/api/ping`, { method: 'OPTIONS', headers: { Origin: 'https://example.test' } });
+      assert.equal(preflight.status, 204);
+    }
+    assert.equal((await fetch(`${baseUrl}/api/ping`)).status, 204);
+    assert.equal((await fetch(`${baseUrl}/api/ping`)).status, 429);
+  }, { maxRequestsPerWindow: 1, allowedOrigins: ['https://example.test'] });
+});
+
+test('Prometheus metrics use bounded route labels for unknown API paths', async () => {
+  await withServer(async (baseUrl) => {
+    for (let index = 0; index < 5; index += 1) await fetch(`${baseUrl}/api/random-${index}`);
+    const response = await fetch(`${baseUrl}/metrics`);
+    assert.equal(response.status, 200);
+    const text = await response.text();
+    assert.match(text, /route="\/api\/other"/);
+    assert.doesNotMatch(text, /random-0|random-1|random-2|random-3|random-4/);
+  });
 });
 
 test('Prometheus metrics can be protected with a bearer token', async () => {

@@ -5,6 +5,7 @@ import {
   median,
   percentile,
   latencySummary,
+  qualifyLatencySamples,
   filterRunOutliers,
   bootstrapMedianConfidenceInterval,
   summarizeThroughputRuns,
@@ -12,6 +13,7 @@ import {
   chooseRunCount,
   shouldIncreaseStreams,
   bufferbloatAnalysis,
+  receiveWindowSummary,
   probeLoss,
   splitBytes,
   coefficientOfVariation,
@@ -35,6 +37,20 @@ test('latency summary exposes requested P50/P90/P95/P99 and RTT jitter', () => {
   assert.ok(summary.p95 >= summary.p90);
   assert.ok(summary.p99 >= summary.p95);
   assert.equal(summary.jitter, 1.75);
+});
+
+test('loaded latency is promoted only with enough successful probes and bounded failure ratio', () => {
+  const good = qualifyLatencySamples([10, 11, 12, 13, 14, 15, 16, 17], { sent: 9, failed: 1 });
+  assert.equal(good.valid, true);
+  assert.equal(good.summary.count, 8);
+
+  const sparse = qualifyLatencySamples([10, 11, 12], { sent: 3, failed: 0 });
+  assert.equal(sparse.valid, false);
+  assert.equal(sparse.reason, 'insufficient-successful-probes');
+
+  const lossy = qualifyLatencySamples([10, 11, 12, 13, 14, 15, 16, 17], { sent: 12, failed: 4 });
+  assert.equal(lossy.valid, false);
+  assert.equal(lossy.reason, 'excessive-probe-failures');
 });
 
 test('run-level MAD filtering only activates with enough samples', () => {
@@ -82,12 +98,24 @@ test('dynamic stream escalation requires meaningful relative and absolute gain',
   assert.equal(shouldIncreaseStreams(1000, 1300, 8), false);
 });
 
-test('bufferbloat analysis reports added loaded latency, not an invented accuracy score', () => {
+test('bufferbloat analysis reports loaded latency increase without an arbitrary grade', () => {
   const result = bufferbloatAnalysis(10, 18, 45);
   assert.equal(result.downIncreaseMs, 8);
   assert.equal(result.upIncreaseMs, 35);
   assert.equal(result.worstIncreaseMs, 35);
-  assert.equal(result.grade, 'C');
+  assert.equal(result.method, 'loaded-p50-minus-idle-p50');
+  assert.equal(bufferbloatAnalysis(10, null, null), null);
+});
+
+test('upload receive windows aggregate exact bytes over the server monotonic interval', () => {
+  const summary = receiveWindowSummary([
+    { received: 500_000, receiveStartedNs: '1000000000', receiveEndedNs: '2000000000' },
+    { received: 500_000, receiveStartedNs: '1100000000', receiveEndedNs: '2100000000' },
+  ]);
+  assert.equal(summary.bytes, 1_000_000);
+  assert.equal(summary.elapsedMs, 1100);
+  assert.ok(Math.abs(summary.mbps - (8 / 1.1)) < 1e-12);
+  assert.equal(receiveWindowSummary([{ received: 1, receiveStartedNs: '5', receiveEndedNs: '5' }]), null);
 });
 
 test('probe loss is explicitly a ratio of failed HTTP probes', () => {

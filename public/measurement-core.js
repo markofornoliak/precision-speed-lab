@@ -64,6 +64,26 @@ export function latencySummary(values) {
   };
 }
 
+export function qualifyLatencySamples(values, { sent, failed, minSuccessful = 8, maxFailureRatio = 0.25 } = {}) {
+  const summary = latencySummary(values);
+  const successful = summary?.count || 0;
+  const totalSent = Number.isFinite(sent) && sent >= 0 ? sent : successful + (Number.isFinite(failed) && failed >= 0 ? failed : 0);
+  const failures = Number.isFinite(failed) && failed >= 0 ? failed : Math.max(0, totalSent - successful);
+  const failureRatio = totalSent > 0 ? failures / totalSent : null;
+  const valid = Boolean(summary)
+    && successful >= minSuccessful
+    && (failureRatio == null || failureRatio <= maxFailureRatio);
+  return {
+    valid,
+    summary: valid ? summary : null,
+    successful,
+    sent: totalSent,
+    failed: failures,
+    failureRatio,
+    reason: valid ? null : !summary || successful < minSuccessful ? 'insufficient-successful-probes' : 'excessive-probe-failures',
+  };
+}
+
 export function medianAbsoluteDeviation(values) {
   if (!values.length) return null;
   const center = median(values);
@@ -169,18 +189,48 @@ export function shouldIncreaseStreams(previousMbps, candidateMbps, currentStream
 }
 
 export function bufferbloatAnalysis(idleMedianMs, downloadMedianMs, uploadMedianMs) {
-  if (![idleMedianMs, downloadMedianMs, uploadMedianMs].some(Number.isFinite)) return null;
   if (!Number.isFinite(idleMedianMs)) return null;
   const downIncreaseMs = Number.isFinite(downloadMedianMs) ? Math.max(0, downloadMedianMs - idleMedianMs) : null;
   const upIncreaseMs = Number.isFinite(uploadMedianMs) ? Math.max(0, uploadMedianMs - idleMedianMs) : null;
-  const worstIncreaseMs = Math.max(...[downIncreaseMs, upIncreaseMs].filter(Number.isFinite));
-  let grade = 'F';
-  if (worstIncreaseMs <= 5) grade = 'A+';
-  else if (worstIncreaseMs <= 15) grade = 'A';
-  else if (worstIncreaseMs <= 30) grade = 'B';
-  else if (worstIncreaseMs <= 60) grade = 'C';
-  else if (worstIncreaseMs <= 100) grade = 'D';
-  return { downIncreaseMs, upIncreaseMs, worstIncreaseMs, grade };
+  const increases = [downIncreaseMs, upIncreaseMs].filter(Number.isFinite);
+  if (!increases.length) return null;
+  return {
+    downIncreaseMs,
+    upIncreaseMs,
+    worstIncreaseMs: Math.max(...increases),
+    method: 'loaded-p50-minus-idle-p50',
+  };
+}
+
+export function receiveWindowSummary(results) {
+  if (!Array.isArray(results) || !results.length) return null;
+  let totalBytes = 0;
+  let firstNs = null;
+  let lastNs = null;
+  let validWindows = 0;
+
+  for (const result of results) {
+    if (!result || !Number.isSafeInteger(result.received) || result.received <= 0) continue;
+    if (typeof result.receiveStartedNs !== 'string' || typeof result.receiveEndedNs !== 'string') continue;
+    if (!/^\d+$/.test(result.receiveStartedNs) || !/^\d+$/.test(result.receiveEndedNs)) continue;
+    const startedNs = BigInt(result.receiveStartedNs);
+    const endedNs = BigInt(result.receiveEndedNs);
+    if (endedNs <= startedNs) continue;
+    totalBytes += result.received;
+    firstNs = firstNs == null || startedNs < firstNs ? startedNs : firstNs;
+    lastNs = lastNs == null || endedNs > lastNs ? endedNs : lastNs;
+    validWindows += 1;
+  }
+
+  if (!validWindows || !Number.isSafeInteger(totalBytes) || totalBytes <= 0 || firstNs == null || lastNs == null || lastNs <= firstNs) return null;
+  const elapsedMs = Number(lastNs - firstNs) / 1e6;
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return null;
+  return {
+    bytes: totalBytes,
+    elapsedMs,
+    mbps: (totalBytes * 8) / (elapsedMs / 1000) / 1_000_000,
+    windows: validWindows,
+  };
 }
 
 export function probeLoss(sent, failed) {
