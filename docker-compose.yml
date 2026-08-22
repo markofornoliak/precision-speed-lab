@@ -2,15 +2,31 @@ services:
   precision-speed-lab:
     build: .
     restart: unless-stopped
+    init: true
     ports:
       - "3000:3000"
     environment:
       HOST: 0.0.0.0
       PORT: 3000
       NODE_ENV: production
+      MEASUREMENT_NODE_ID: local-1
+      MEASUREMENT_REGION: local
       MAX_TRANSFER_BYTES: 524288000
       DOWNLOAD_CHUNK_BYTES: 262144
       RANDOM_POOL_BYTES: 4194304
       MAX_ACTIVE_TRANSFERS: 128
       MAX_ACTIVE_PER_CLIENT: 16
+      RATE_WINDOW_MS: 60000
+      MAX_REQUESTS_PER_WINDOW: 900
+      MAX_BYTES_PER_WINDOW: 8589934592
+      UPLOAD_IDLE_TIMEOUT_MS: 30000
       TRUST_PROXY: 0
+      ENABLE_METRICS: 0
+      LOG_LEVEL: info
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

@@ -1,35 +1,22 @@
-name: Backend CI
+name: Production CI
 
 on:
   push:
     branches: [main]
-    paths:
-      - 'server.js'
-      - 'src/**'
-      - 'test/**'
-      - 'public/app.js'
-      - 'package.json'
-      - 'Dockerfile'
-      - '.env.example'
-      - '.github/workflows/backend-ci.yml'
   pull_request:
-    paths:
-      - 'server.js'
-      - 'src/**'
-      - 'test/**'
-      - 'public/app.js'
-      - 'package.json'
-      - 'Dockerfile'
-      - '.env.example'
-      - '.github/workflows/backend-ci.yml'
 
 permissions:
   contents: read
 
 jobs:
-  backend-test:
+  test:
+    name: Node ${{ matrix.node }} checks
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
 
     steps:
       - name: Checkout
@@ -38,18 +25,38 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: ${{ matrix.node }}
 
-      - name: Syntax and integration tests
+      - name: Syntax, statistics and integration tests
         run: npm run check
 
-      - name: Build production container
-        run: docker build -t precision-speed-lab:test .
+  container-smoke:
+    name: Production container smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: test
 
-      - name: Run production container
-        run: docker run -d --name precision-speed-lab-ci -p 3000:3000 precision-speed-lab:test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Smoke-test health and real byte transfer
+      - name: Validate Compose configuration
+        run: docker compose config >/dev/null
+
+      - name: Build production image
+        run: docker build --pull -t precision-speed-lab:test .
+
+      - name: Start hardened production container
+        run: |
+          docker run -d --name precision-speed-lab-ci \
+            --read-only \
+            --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+            --cap-drop ALL \
+            --security-opt no-new-privileges \
+            -p 3000:3000 \
+            precision-speed-lab:test
+
+      - name: End-to-end frontend and measurement API smoke test
         shell: bash
         run: |
           set -euo pipefail
@@ -60,7 +67,10 @@ jobs:
             sleep 1
           done
 
-          curl --fail --silent http://127.0.0.1:3000/api/health | grep '"ok":true'
+          curl --fail --silent http://127.0.0.1:3000/ | grep 'Precision Speed Lab'
+          curl --fail --silent http://127.0.0.1:3000/app.js | grep 'runMainThroughput'
+          curl --fail --silent http://127.0.0.1:3000/measurement-core.js | grep 'bootstrapMedianConfidenceInterval'
+          curl --fail --silent http://127.0.0.1:3000/api/capabilities | grep '"streamingUpload":true'
 
           downloaded=$(curl --fail --silent 'http://127.0.0.1:3000/api/download?bytes=1048576' | wc -c)
           test "$downloaded" -eq 1048576
