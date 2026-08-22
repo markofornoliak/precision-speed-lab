@@ -106,8 +106,10 @@ test('cancellation during download aborts the run and leaves no final metrics', 
 });
 
 test('cancellation during upload aborts the run and leaves no final metrics', async ({ page }) => {
-  await page.route('**/api/upload?**', async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 500));
+  let releaseUpload;
+  const uploadGate = new Promise((resolve) => { releaseUpload = resolve; });
+  await page.route('**/api/upload**', async (route) => {
+    await uploadGate;
     try { await route.continue(); } catch {}
   });
   await waitForReady(page);
@@ -115,6 +117,7 @@ test('cancellation during upload aborts the run and leaves no final metrics', as
   await page.getByRole('button', { name: 'Начать тест' }).click();
   await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__.getState()), { timeout: 35_000 }).toBe('UPLOAD');
   await page.getByRole('button', { name: 'Остановить' }).click();
+  releaseUpload();
   await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__.getState())).toBe('CANCELLED');
   expect(await page.evaluate(() => window.__PSL_DIAGNOSTICS__.getFinalResult())).toBeNull();
   await expect(page.locator('#uploadValue')).toHaveText('—');
@@ -174,7 +177,7 @@ test('measurement is invalidated if lifecycle reports background suspension', as
 });
 
 test('structured backend error gives a useful recovery path', async ({ page }) => {
-  await page.route('**/api/info', async (route) => {
+  await page.route('**/api/capabilities', async (route) => {
     await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Server unavailable' }) });
   });
   await page.goto('/');
