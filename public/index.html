@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#07111f" />
+  <meta name="description" content="Precision Speed Lab — точное измерение ping, jitter, download и upload." />
+  <title>Precision Speed Lab</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="noise" aria-hidden="true"></div>
+  <header class="topbar">
+    <a class="brand" href="#" aria-label="Precision Speed Lab">
+      <span class="brand-mark">PS</span>
+      <span><strong>Precision</strong><small>Speed Lab</small></span>
+    </a>
+    <div class="status-pill"><span class="status-dot"></span><span id="serverStatus">Сервер готов</span></div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="eyebrow">NETWORK PERFORMANCE INSTRUMENT</div>
+      <h1>Скорость связи.<br><span>Без догадок.</span></h1>
+      <p class="lead">Измеряем задержку, джиттер, загрузку и отдачу реальным потоком данных. Размер теста — от 1 MB до 500 MB.</p>
+    </section>
+
+    <section class="tester" aria-label="Тест скорости">
+      <div class="gauge-wrap">
+        <div class="gauge" id="gauge">
+          <svg viewBox="0 0 320 180" aria-hidden="true">
+            <path class="gauge-track" d="M28 158 A132 132 0 0 1 292 158" />
+            <path class="gauge-progress" id="gaugeProgress" d="M28 158 A132 132 0 0 1 292 158" />
+          </svg>
+          <div class="gauge-center">
+            <span class="gauge-label" id="phaseLabel">ГОТОВ</span>
+            <strong id="speedValue">0.00</strong>
+            <span class="unit">Mbps</span>
+          </div>
+        </div>
+        <button class="start-btn" id="startBtn">НАЧАТЬ ТЕСТ</button>
+        <button class="stop-btn" id="stopBtn" hidden>Остановить</button>
+      </div>
+
+      <div class="metrics-grid">
+        <article class="metric-card">
+          <span class="metric-name">PING</span>
+          <strong id="pingValue">—</strong>
+          <small>ms</small>
+        </article>
+        <article class="metric-card">
+          <span class="metric-name">JITTER</span>
+          <strong id="jitterValue">—</strong>
+          <small>ms</small>
+        </article>
+        <article class="metric-card accent-down">
+          <span class="metric-name">DOWNLOAD</span>
+          <strong id="downloadValue">—</strong>
+          <small>Mbps</small>
+        </article>
+        <article class="metric-card accent-up">
+          <span class="metric-name">UPLOAD</span>
+          <strong id="uploadValue">—</strong>
+          <small>Mbps</small>
+        </article>
+        <article class="metric-card">
+          <span class="metric-name">LATENCY · DOWNLOAD</span>
+          <strong id="loadedDownValue">—</strong>
+          <small>ms</small>
+        </article>
+        <article class="metric-card">
+          <span class="metric-name">LATENCY · UPLOAD</span>
+          <strong id="loadedUpValue">—</strong>
+          <small>ms</small>
+        </article>
+        <article class="metric-card">
+          <span class="metric-name">STABILITY</span>
+          <strong id="stabilityValue">—</strong>
+          <small>%</small>
+        </article>
+        <article class="metric-card">
+          <span class="metric-name">BUFFERBLOAT</span>
+          <strong id="bufferbloatValue">—</strong>
+          <small>grade</small>
+        </article>
+      </div>
+
+      <div class="controls-panel">
+        <div class="control-group">
+          <div class="control-heading">
+            <label>Объём теста</label>
+            <span id="sizeHint">100 MB</span>
+          </div>
+          <div class="segmented" id="sizeSelector" role="radiogroup" aria-label="Объсм теста">
+            <button data-size="1">1</button>
+            <button data-size="2">2</button>
+            <button data-size="5">5</button>
+            <button data-size="10">10</button>
+            <button data-size="100" class="active">100</button>
+            <button data-size="250">250</button>
+            <button data-size="500">500</button>
+          </div>
+        </div>
+
+        <div class="control-group compact-row">
+          <div>
+            <label for="connections">Параллельные потоки</label>
+            <select id="connections">
+              <option value="1">1 поток</option>
+              <option value="2">2 потока</option>
+              <option value="4" selected>4 потока</option>
+              <option value="6">6 потоков</option>
+              <option value="8">8 потоков</option>
+            </select>
+          </div>
+          <div class="switch-wrap">
+            <div>
+              <label>Высокая точность</label>
+              <small>несколько прогонов + медиана</small>
+            </div>
+            <button class="switch on" id="precisionToggle" aria-pressed="true"><span></span></button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="chart-section">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow">LIVE TELEMETRY</div>
+          <h2>Кривая пропускной способности</h2>
+        </div>
+        <div class="legend"><span class="down-dot"></span>Download <span class="up-dot"></span>Upload</div>
+      </div>
+      <canvas id="speedChart" height="280" aria-label="График скорости"></canvas>
+    </section>
+
+    <section class="details-grid">
+      <article class="detail-card">
+        <span>Точность измерения</span>
+        <strong id="confidenceValue">—</strong>
+        <p id="confidenceText">Будет рассчитана по разбросу результатов.</p>
+      </article>
+      <article class="detail-card">
+        <span>Передано данных</span>
+        <strong id="dataValue">0 MB</strong>
+        <p>Суммарный объём download + upload.</p>
+      </article>
+      <article class="detail-card">
+        <span>Технология</span>
+        <strong>Real byte stream</strong>
+        <p>Без искусственной анимации и без зависимости от CDN-файлов.</p>
+      </article>
+    </section>
+
+    <section class="methodology">
+      <div>
+        <div class="eyebrow">METHODOLOGY</div>
+        <h2>Почему результат можно доверять</h2>
+      </div>
+      <div class="method-list">
+        <div><b>01</b><span><strong>Кэш отключён</strong><small>Каждый запрос уникален, ответы помечены no-store.</small></span></div>
+        <div><b>02</b><span><strong>Многопоточность</strong><small>1–8 параллельных соединений помогают загрузить канал полностью.</small></span></div>
+        <div><b>03</b><span><strong>Статистика</strong><small>В точном режиме выполняются повторные прогоны и медианное усреднение.</small></span></div>
+        <div><b>04</b><span><strong>Реальный объём</strong><small>1, 2, 5, 10, 100, 250 или 500 MB действительно проходят по сети.</small></span></div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span>Precision Speed Lab</span>
+    <span id="footerInfo">Локальный измерительный узел</span>
+  </footer>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
