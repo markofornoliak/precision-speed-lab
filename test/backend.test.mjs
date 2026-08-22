@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { createSpeedServer } from '../src/speed-server.js';
 
 const MIB = 1024 * 1024;
@@ -78,11 +79,10 @@ test('download rejects oversized requests', async () => {
 test('upload consumes bytes as a stream and reports server timing', async () => {
   await withServer(async (baseUrl) => {
     const bytes = 512 * 1024;
-    const body = crypto.getRandomValues(new Uint8Array(bytes));
     const response = await fetch(`${baseUrl}/api/upload?nonce=${Date.now()}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
-      body
+      body: crypto.randomBytes(bytes)
     });
 
     assert.equal(response.status, 200);
@@ -98,12 +98,8 @@ test('upload rejects payloads larger than the configured maximum', async () => {
   await withServer(async (baseUrl) => {
     const response = await fetch(`${baseUrl}/api/upload`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        'Content-Length': String(3 * MIB)
-      },
-      body: new Uint8Array(1),
-      duplex: 'half'
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: crypto.randomBytes(3 * MIB)
     });
     assert.equal(response.status, 413);
   });
