@@ -69,17 +69,26 @@ jobs:
 
           curl --fail --silent http://127.0.0.1:3000/ | grep 'Precision Speed Lab'
           curl --fail --silent http://127.0.0.1:3000/app.js | grep 'runMainThroughput'
-          curl --fail --silent http://127.0.0.1:3000/measurement-core.js | grep 'bootstrapMedianConfidenceInterval'
-          curl --fail --silent http://127.0.0.1:3000/api/capabilities | grep '"streamingUpload":true'
+          curl --fail --silent http://127.0.0.1:3000/measurement-core.js | grep 'receiveWindowSummary'
+          curl --fail --silent http://127.0.0.1:3000/api/capabilities | grep '"serverReceiveTiming":true'
 
           downloaded=$(curl --fail --silent 'http://127.0.0.1:3000/api/download?bytes=1048576' | wc -c)
           test "$downloaded" -eq 1048576
 
-          head -c 1048576 /dev/zero | \
+          upload_result=$(head -c 1048576 /dev/zero | \
             curl --fail --silent \
               -H 'Content-Type: application/octet-stream' \
               --data-binary @- \
-              http://127.0.0.1:3000/api/upload | grep '"received":1048576'
+              http://127.0.0.1:3000/api/upload)
+          echo "$upload_result" | grep '"received":1048576'
+          echo "$upload_result" | grep '"receiveStartedNs":"[0-9]'
+          echo "$upload_result" | grep '"receiveEndedNs":"[0-9]'
+
+          zero_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            -H 'Content-Type: application/octet-stream' \
+            --data-binary '' \
+            http://127.0.0.1:3000/api/upload)
+          test "$zero_status" -eq 400
 
       - name: Container logs on failure
         if: failure()
