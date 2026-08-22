@@ -54,8 +54,8 @@ jobs:
       - name: Install Chromium and WebKit test engines
         run: npx playwright install --with-deps chromium webkit
 
-      - name: Behavioral, mobile, lifecycle and accessibility tests
-        run: npx playwright test test/browser/instrument.spec.mjs
+      - name: Behavioral, viewport, lifecycle and accessibility tests
+        run: npx playwright test test/browser/instrument.spec.mjs test/browser/viewports.spec.mjs
 
       - name: Generate deterministic visual baseline fingerprints
         env:
