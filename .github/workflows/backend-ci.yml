@@ -57,9 +57,7 @@ jobs:
       - name: Behavioral, viewport, lifecycle, cancellation-race and accessibility tests
         run: npx playwright test test/browser/instrument.spec.mjs test/browser/viewports.spec.mjs test/browser/races.spec.mjs
 
-      - name: Generate deterministic visual baseline fingerprints
-        env:
-          VISUAL_UPDATE: '1'
+      - name: Verify deterministic visual regression fingerprints
         run: npx playwright test test/browser/visual.spec.mjs --project=chromium
 
       - name: Upload browser QA report on failure
