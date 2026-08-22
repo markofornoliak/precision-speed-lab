@@ -1,0 +1,45 @@
+name: Apply canvas accessibility hotfix
+
+on:
+  push:
+    branches: [frontend-instrument-overhaul]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, '[canvas-a11y-applied]') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: frontend-instrument-overhaul
+          fetch-depth: 0
+      - name: Give the scientific chart an accessible name
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('public/index.html')
+          source = path.read_text()
+          old = '<canvas id="speedChart" height="220" role="img" aria-describedby="chartSummary"></canvas>'
+          new = '<canvas id="speedChart" height="220" role="img" aria-labelledby="chartTitle" aria-describedby="chartSummary"></canvas>'
+          if source.count(old) != 1:
+              raise SystemExit(f'Expected exactly one chart canvas, found {source.count(old)}')
+          path.write_text(source.replace(old, new))
+          PY
+          git diff --check
+          git diff -- public/index.html
+      - name: Commit patch
+        shell: bash
+        run: |
+          if git diff --quiet -- public/index.html; then
+            echo 'No patch required'
+            exit 0
+          fi
+          git config user.name 'precision-speed-lab-ci'
+          git config user.email 'actions@users.noreply.github.com'
+          git add public/index.html
+          git commit -m 'Name chart for assistive technology [canvas-a11y-applied]'
+          git push origin HEAD:frontend-instrument-overhaul
