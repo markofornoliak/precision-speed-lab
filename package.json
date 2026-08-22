@@ -1,14 +1,14 @@
 {
   "name": "precision-speed-lab",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "High-precision browser network speed test with a production Node.js measurement backend.",
+  "description": "Minimal browser network performance instrument with a production-grade Node.js measurement backend.",
   "type": "module",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
     "test": "node --test test/*.test.mjs",
-    "check": "node --check server.js && node --check src/speed-server.js && node --check public/app.js && node --check test/backend.test.mjs && npm test"
+    "check": "node --check server.js && node --check src/speed-server.js && node --check public/measurement-core.js && node --check public/app.js && node --check test/backend.test.mjs && node --check test/measurement-core.test.mjs && npm test"
   },
   "engines": {
     "node": ">=20"
