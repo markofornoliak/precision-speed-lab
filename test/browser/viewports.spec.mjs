@@ -13,16 +13,17 @@ const VIEWPORTS = [
   { name: 'ultrawide', width: 2560, height: 1080 },
 ];
 
-async function waitForIdle(page) {
+async function waitForReady(page) {
   await page.goto('/');
-  await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__?.getState())).toBe('IDLE');
+  await expect.poll(() => page.evaluate(() => window.__PSL_DIAGNOSTICS__?.getState())).toBe('READY');
 }
 
 async function injectUglyCompletedValues(page) {
   await page.evaluate(() => {
     document.body.dataset.appState = 'COMPLETE';
     document.querySelector('#downloadValue').textContent = '9876.4';
-    document.querySelector('#uploadValue').textContent = '10000.0';
+    document.querySelector('#uploadValue').textContent = '10.2';
+    document.querySelector('#uploadUnit').textContent = 'Gbps';
     document.querySelector('#pingValue').textContent = '1247';
     document.querySelector('#jitterValue').textContent = '987.6';
     document.querySelector('#loadedDownValue').textContent = '1247';
@@ -54,7 +55,7 @@ async function expectNoHorizontalOverflow(page, viewport) {
 test('all acceptance viewports remain stable with extreme instrument values', async ({ page }) => {
   for (const viewport of VIEWPORTS) {
     await page.setViewportSize({ width: viewport.width, height: viewport.height });
-    await waitForIdle(page);
+    await waitForReady(page);
     await injectUglyCompletedValues(page);
     await expectNoHorizontalOverflow(page, viewport);
   }
@@ -63,12 +64,23 @@ test('all acceptance viewports remain stable with extreme instrument values', as
 test('mobile WebKit geometry and one-hand control target remain valid @safari', async ({ page }) => {
   const viewport = { name: '390x844-webkit', width: 390, height: 844 };
   await page.setViewportSize({ width: viewport.width, height: viewport.height });
-  await waitForIdle(page);
+  await waitForReady(page);
   await injectUglyCompletedValues(page);
   await expectNoHorizontalOverflow(page, viewport);
 
   const startBox = await page.locator('#startBtn').boundingBox();
   const settingsBox = await page.locator('#settingsDetails > summary').boundingBox();
+  const qualityBox = await page.locator('#qualitySection > summary').boundingBox();
   expect(startBox.height).toBeGreaterThanOrEqual(44);
   expect(settingsBox.height).toBeGreaterThanOrEqual(44);
+  expect(qualityBox.height).toBeGreaterThanOrEqual(44);
+});
+
+test('landscape instrument keeps primary controls usable without desktop-card compression', async ({ page }) => {
+  await page.setViewportSize({ width: 844, height: 390 });
+  await waitForReady(page);
+  const startBox = await page.locator('#startBtn').boundingBox();
+  expect(startBox.height).toBeGreaterThanOrEqual(44);
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  expect(overflow).toBeLessThanOrEqual(0);
 });
