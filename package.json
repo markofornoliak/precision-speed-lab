@@ -8,7 +8,13 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "test": "node --test test/*.test.mjs",
-    "check": "node --check server.js && node --check src/speed-server.js && node --check public/measurement-core.js && node --check public/app.js && node --check test/backend.test.mjs && node --check test/measurement-core.test.mjs && npm test"
+    "test:browser": "playwright test",
+    "test:browser:update-visuals": "VISUAL_UPDATE=1 playwright test test/browser/visual.spec.mjs --project=chromium",
+    "check": "node --check server.js && node --check src/speed-server.js && node --check public/measurement-core.js && node --check public/ui-core.js && node --check public/app.js && node --check test/backend.test.mjs && node --check test/measurement-core.test.mjs && node --check test/ui-core.test.mjs && node --check test/frontend-quality.test.mjs && node --check playwright.config.mjs && node --check test/browser/instrument.spec.mjs && node --check test/browser/viewports.spec.mjs && node --check test/browser/races.spec.mjs && node --check test/browser/visual.spec.mjs && npm test"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@playwright/test": "1.62.1"
   },
   "engines": {
     "node": ">=20"

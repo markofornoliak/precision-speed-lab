@@ -2,7 +2,9 @@
 
 Precision Speed Lab is a deliberately minimal browser network-performance instrument backed by a dependency-free Node.js measurement server.
 
-The UI is intentionally simple. The engineering underneath is not: exact byte accounting, connection warm-up, adaptive payload duration, dynamic 1 → 2 → 4 → 8 stream calibration, repeat runs, robust aggregation, loaded latency, throughput variability, cancellation, abuse protection, structured logs, optional Prometheus metrics, Docker deployment, and regional-node discovery are built into the current architecture.
+The visible interface is intentionally quiet. The engineering underneath is not: exact byte accounting, connection warm-up, adaptive payload duration, dynamic 1 → 2 → 4 → 8 stream calibration, repeat runs, robust aggregation, loaded latency, throughput variability, cancellation, abuse protection, structured logs, optional Prometheus metrics, Docker deployment, and regional-node discovery are built into the current architecture.
+
+The frontend follows the same principle. High-resolution measurement data, rate-limited presentation telemetry, and immutable completed results are kept separate so rendering work does not become part of the workload being measured. The active test has no decorative animation loop and does not continuously redraw the result chart.
 
 ## Measurement principles
 
@@ -10,13 +12,13 @@ The project follows one rule above all others: **do not display a metric unless 
 
 ### Throughput
 
-- Download is calculated from bytes actually read by the browser divided by wall-clock duration of the main run.
-- Upload is calculated from bytes confirmed received by the measurement server divided by wall-clock duration of the main run.
-- Main runs are preceded by a connection warm-up to reduce connection-establishment and TCP slow-start effects.
+- Download is calculated from bytes actually read by the browser divided by browser wall-clock duration of the main run.
+- Upload is calculated from bytes accepted by the measurement server over its monotonic receive window, from the first received byte to the last. Response-return latency is not folded into the final upload throughput.
+- Main runs are preceded by connection warm-up to reduce connection-establishment and TCP slow-start effects.
 - `Auto` payload mode targets a measurement duration from a short calibration and caps the request at the server-advertised maximum.
-- Auto stream mode calibrates 1, 2, 4 and 8 streams and only escalates when the additional concurrency produces a meaningful gain.
+- Auto stream mode calibrates 1, 2, 4 and 8 streams and only escalates when additional concurrency produces a meaningful gain.
 - The final headline number is the median of repeated run-level throughput results.
-- With at least five runs, gross run-level outliers can be excluded using a median-absolute-deviation (MAD) rule. The raw values remain conceptually distinct from the filtered aggregate.
+- With at least five runs, gross run-level outliers can be excluded using a median-absolute-deviation (MAD) rule. Raw and used run counts remain visible as expert evidence.
 - The 95% interval shown in the UI is a percentile-bootstrap confidence interval for the run-level median. It is **not** called “measurement accuracy.”
 
 ### Latency and jitter
@@ -25,18 +27,39 @@ The project follows one rule above all others: **do not display a metric unless 
 - P50 / P90 / P95 / P99 are calculated from successful idle RTT samples using linear percentile interpolation.
 - Jitter is the mean absolute difference between consecutive RTT samples (`mean |RTT[n] - RTT[n-1]|`).
 - Loaded latency is measured with concurrent HTTP RTT probes while download or upload is active.
+- A loaded-latency result is published only when probe qualification criteria are satisfied.
 
-### Packet loss limitation
+### Probe loss limitation
 
-A normal browser HTTP/TCP test cannot honestly measure network-layer packet loss because TCP retransmits lost packets before the application sees them. For that reason the UI does **not** invent an L3 “packet loss” percentage. It reports **HTTP probe loss**: the fraction of timed-out/failed application-level latency probes.
+A normal browser HTTP/TCP test cannot honestly measure network-layer packet loss because TCP retransmits lost packets before the application sees them. The UI therefore does **not** invent an L3 “packet loss” percentage. It reports **HTTP probe loss**: the fraction of timed-out or failed application-level latency probes.
 
-A future true packet-loss mode should use a protocol that exposes datagram delivery/loss directly (for example a controlled WebRTC/QUIC/UDP measurement path) and should be named separately.
+A future true packet-loss mode would need a protocol that exposes datagram delivery/loss directly and would be named separately.
 
-### Stability and bufferbloat
+### Variation and bufferbloat
 
-- Download and upload stability are separate.
-- Stability is expressed as the coefficient of variation (CV) of throughput samples; lower CV means steadier throughput. No arbitrary `100 - CV` score is used.
-- Bufferbloat analysis compares loaded P50 RTT with idle P50 RTT. The letter grade is a documented heuristic derived from the added latency; the added milliseconds are displayed alongside it.
+- Download and upload variation are independent.
+- Throughput variation is expressed as the coefficient of variation (CV) of steady-state throughput samples; lower CV means steadier throughput. No arbitrary `100 - CV` score is used.
+- Bufferbloat is shown as the actual increase between the worst qualified loaded P50 RTT and idle P50 RTT.
+
+## Frontend architecture
+
+The browser UI remains framework-free and has **zero production runtime dependencies**.
+
+- `public/measurement-core.js` contains measurement/statistical helpers and remains the mathematical source of truth.
+- `public/ui-core.js` contains the explicit frontend state machine, number formatting, error classification, chart decimation, and immutable final-result promotion.
+- `public/app.js` orchestrates the measurement lifecycle and presentation without allowing measurement samples to drive expensive rendering directly.
+- Live numeric presentation is rate-limited; high-resolution samples used for calculations are not discarded or visually smoothed.
+- The chart is rendered only when expert evidence is deliberately opened after a completed measurement. It is DPR-aware, resize-aware, and decimates points without inventing intermediate values.
+- Lifecycle changes such as backgrounding, page hiding, or freezing invalidate an active measurement rather than silently publishing a potentially corrupted result.
+- Cancellation aborts active transfer work and cannot promote partial metrics to a final result.
+
+The UI state model includes booting, server-ready, idle, preparation, latency, download/upload calibration and warm-up, active download/upload, analysis, completion, cancellation, cancelled, and error states. Illegal state transitions are rejected.
+
+## Browser and Safari behavior
+
+Request-body streaming is used only when both the browser API and the negotiated transport make that path defensible. In particular, the frontend enables streaming request bodies over negotiated HTTP/2 or HTTP/3; HTTP/1.1, unsupported browsers, and uncertain transports use the bounded Blob/chunk fallback. Both upload paths preserve server receive-window timing for the final metric.
+
+WebKit is exercised in browser CI for the primary measurement flow, cancellation behavior, accessibility, and mobile geometry. The UI also handles safe-area insets, reduced motion, viewport changes, and measurement invalidation on lifecycle suspension.
 
 ## Backend API
 
@@ -69,8 +92,8 @@ The server intentionally uses Node core modules only.
 - CSP and standard browser hardening headers;
 - graceful SIGTERM/SIGINT shutdown;
 - low-memory download streaming from a small random pool;
-- low-memory browser upload streaming when request streams are supported;
-- bounded chunk fallback for browsers without streaming request bodies;
+- request-body streaming on eligible HTTP/2 or HTTP/3 browser transports;
+- bounded chunk fallback elsewhere;
 - anonymized ephemeral client keys for in-memory protection (raw IP addresses are not logged by default).
 
 The in-memory abuse controls are deliberately per-process. A multi-instance deployment that requires a global quota can add a shared edge/load-balancer policy without changing the measurement API.
@@ -110,11 +133,23 @@ IPv4/IPv6 awareness is exposed through `/api/info`. The browser cannot force a s
 Requires Node.js 20+.
 
 ```bash
+npm install
 npm run check
 npm start
 ```
 
 Open `http://localhost:3000`.
+
+The installed packages are development-only browser QA tools; the production application has no runtime package dependencies.
+
+For browser QA:
+
+```bash
+npx playwright install chromium webkit
+npm run test:browser
+```
+
+`npm run test:browser:update-visuals` is reserved for deliberate visual-baseline updates after a reviewed design change.
 
 ## Docker
 
@@ -131,19 +166,22 @@ docker compose up --build
 
 The supplied Compose service runs as the unprivileged Node user, read-only, with all Linux capabilities dropped and `no-new-privileges` enabled.
 
-## CI
+## CI quality gates
 
-GitHub Actions runs:
+GitHub Actions blocks a change unless all relevant quality gates pass:
 
-1. syntax + statistical + backend integration tests on Node 20 and Node 22;
-2. Docker Compose validation;
-3. production image build;
-4. hardened container startup;
-5. frontend asset smoke tests;
-6. health/capabilities checks;
-7. exact 1 MiB download and upload end-to-end transfer checks.
+1. syntax, measurement-core, statistical, backend integration, UI-state, formatting and frontend-budget checks on Node.js 20 and 22;
+2. production runtime-dependency and transferred-size budgets;
+3. Chromium behavioral tests for boot, controls, phases, completion, structured errors, lifecycle invalidation, cancellation, immutable final results and on-demand chart rendering;
+4. WebKit coverage for the primary flow, cancellation-race handling, accessibility-sensitive behavior and mobile geometry;
+5. automated accessibility checks with axe for serious regressions;
+6. exact responsive checks at 320×568, 360×800, 375×812, 390×844, 393×852, 430×932, tablet portrait/landscape, desktop and ultrawide dimensions, including deliberately extreme numeric values;
+7. cancellation-race checks that fail on uncaught errors or unhandled Promise rejections;
+8. deterministic visual-regression fingerprints for idle desktop, running download, running upload, completed desktop, idle mobile, completed mobile and error states;
+9. Docker Compose validation and a production image build;
+10. hardened read-only container startup plus end-to-end frontend assets, capabilities, exact 1 MiB download/upload transfers and server receive-window timing checks.
 
-The test suite covers the statistical definitions as code, not only endpoint availability.
+Automation complements rather than replaces visual and measurement-semantic review.
 
 ## Important deployment notes
 

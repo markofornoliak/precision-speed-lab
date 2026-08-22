@@ -27,14 +27,53 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
-      - name: Syntax, statistics and integration tests
+      - name: Install development-only QA dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Syntax, measurement, state-machine and frontend-budget checks
         run: npm run check
+
+  browser-quality:
+    name: Browser, accessibility and visual QA
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install development-only QA dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Install Chromium and WebKit test engines
+        run: npx playwright install --with-deps chromium webkit
+
+      - name: Behavioral, viewport, lifecycle, cancellation-race and accessibility tests
+        run: npx playwright test test/browser/instrument.spec.mjs test/browser/viewports.spec.mjs test/browser/races.spec.mjs
+
+      - name: Verify deterministic visual regression fingerprints
+        run: npx playwright test test/browser/visual.spec.mjs --project=chromium
+
+      - name: Upload browser QA report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
 
   container-smoke:
     name: Production container smoke test
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    needs: test
+    needs: [test, browser-quality]
 
     steps:
       - name: Checkout
@@ -68,7 +107,8 @@ jobs:
           done
 
           curl --fail --silent http://127.0.0.1:3000/ | grep 'Precision Speed Lab'
-          curl --fail --silent http://127.0.0.1:3000/app.js | grep 'runMainThroughput'
+          curl --fail --silent http://127.0.0.1:3000/app.js | grep 'class TelemetryPresenter'
+          curl --fail --silent http://127.0.0.1:3000/ui-core.js | grep 'createStateMachine'
           curl --fail --silent http://127.0.0.1:3000/measurement-core.js | grep 'receiveWindowSummary'
           curl --fail --silent http://127.0.0.1:3000/api/capabilities | grep '"serverReceiveTiming":true'
 
