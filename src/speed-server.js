@@ -99,7 +99,7 @@ function applyApiHeaders(req, res, allowedOrigins) {
   applySecurityHeaders(res);
   applyNoCache(res);
   const corsOrigin = resolveCorsOrigin(req, allowedOrigins);
-  res.setHeader('Timing-Allow-Origin', corsOrigin || 'self');
+  if (corsOrigin) res.setHeader('Timing-Allow-Origin', corsOrigin);
   res.setHeader('Access-Control-Expose-Headers', 'Server-Timing, X-Transfer-Id, X-Test-Bytes, X-Request-Id, X-Measurement-Node');
   if (corsOrigin) {
     res.setHeader('Access-Control-Allow-Origin', corsOrigin);
@@ -322,10 +322,11 @@ function serveStatic(req, res, pathname, publicDir) {
 }
 
 function safeRoute(pathname) {
-  if (pathname === '/api/download') return '/api/download';
-  if (pathname === '/api/upload') return '/api/upload';
-  if (pathname === '/api/progress') return '/api/progress';
-  if (pathname.startsWith('/api/')) return pathname.slice(0, 80);
+  const known = new Set([
+    '/api/health', '/api/capabilities', '/api/servers', '/api/ping', '/api/info', '/api/download', '/api/upload', '/api/progress',
+  ]);
+  if (known.has(pathname)) return pathname;
+  if (pathname.startsWith('/api/')) return '/api/other';
   if (pathname === '/metrics') return '/metrics';
   return 'static';
 }
@@ -339,7 +340,7 @@ export function createSpeedServer(options = {}) {
   const maxActivePerClient = options.maxActivePerClient || envInt('MAX_ACTIVE_PER_CLIENT', 16, 1, 256);
   const trustProxy = options.trustProxy ?? envBool('TRUST_PROXY');
   const allowedOrigins = options.allowedOrigins || envList('CORS_ORIGINS', 'CORS_ORIGIN');
-  const version = options.version || '2.0.0';
+  const version = options.version || '2.1.0';
   const nodeId = options.nodeId || process.env.MEASUREMENT_NODE_ID || os.hostname();
   const region = options.region || process.env.MEASUREMENT_REGION || 'local';
   const publicBaseUrl = (options.publicBaseUrl || process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
@@ -399,14 +400,6 @@ export function createSpeedServer(options = {}) {
     const pathname = url.pathname;
     requestRoute.value = safeRoute(pathname);
 
-    if (pathname.startsWith('/api/')) {
-      const rate = limiter.request(req, pathname === '/api/ping' ? 1 : 2);
-      if (!rate.ok) {
-        res.setHeader('Retry-After', String(rate.retryAfter));
-        return sendJson(req, res, 429, { error: rate.reason, requestId }, allowedOrigins);
-      }
-    }
-
     if (pathname.startsWith('/api/') && req.method === 'OPTIONS') {
       res.statusCode = 204;
       applyApiHeaders(req, res, allowedOrigins);
@@ -414,6 +407,14 @@ export function createSpeedServer(options = {}) {
       res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Content-Length, Cache-Control, Authorization');
       res.setHeader('Access-Control-Max-Age', '600');
       return res.end();
+    }
+
+    if (pathname.startsWith('/api/')) {
+      const rate = limiter.request(req, pathname === '/api/ping' ? 1 : 2);
+      if (!rate.ok) {
+        res.setHeader('Retry-After', String(rate.retryAfter));
+        return sendJson(req, res, 429, { error: rate.reason, requestId }, allowedOrigins);
+      }
     }
 
     if (pathname === '/api/health') {
@@ -449,6 +450,7 @@ export function createSpeedServer(options = {}) {
         features: {
           streamingDownload: true, streamingUpload: true, uploadProgress: true, requestCancellation: true,
           ipv4Ipv6Awareness: true, regionalServerDiscovery: true, prometheusMetrics: metricsEnabled,
+          serverReceiveTiming: true,
         },
         endpoints: {
           ping: '/api/ping', info: '/api/info', download: '/api/download?bytes={bytes}', upload: '/api/upload?id={uuid}',
@@ -550,7 +552,7 @@ export function createSpeedServer(options = {}) {
       let declaredLength = null;
       if (declaredLengthRaw != null) {
         declaredLength = Number(declaredLengthRaw);
-        if (!Number.isSafeInteger(declaredLength) || declaredLength < 0) return rejectUpload(req, res, 400, { error: 'Invalid Content-Length', requestId }, allowedOrigins);
+        if (!Number.isSafeInteger(declaredLength) || declaredLength <= 0) return rejectUpload(req, res, 400, { error: 'Content-Length must be a positive integer', requestId }, allowedOrigins);
         if (declaredLength > maxBytes) return rejectUpload(req, res, 413, { error: `Maximum upload is ${maxBytes} bytes`, requestId }, allowedOrigins);
         const quota = limiter.bytes(req, declaredLength);
         if (!quota.ok) return rejectUpload(req, res, 429, { error: quota.reason, requestId }, allowedOrigins, quota.retryAfter);
@@ -565,7 +567,7 @@ export function createSpeedServer(options = {}) {
       let received = 0;
       let startedNs = null;
       let completed = false;
-      let quotaCharged = declaredLength != null;
+      const quotaCharged = declaredLength != null;
       const progressItem = { received: 0, startedNs: null, updatedAt: Date.now(), completed: false };
       progress.set(transferId, progressItem);
       const finish = (success) => {
@@ -611,14 +613,28 @@ export function createSpeedServer(options = {}) {
         if (first && !res.headersSent) sendJson(req, res, 400, { error: 'Upload interrupted', requestId }, allowedOrigins);
       });
       req.once('end', () => {
-        if (!finish(true)) return;
-        if (declaredLength != null && declaredLength !== received) return sendJson(req, res, 400, { error: 'Received byte count does not match Content-Length', received, declaredLength, requestId }, allowedOrigins);
+        if (completed) return;
+        if (received <= 0 || !startedNs) {
+          finish(false);
+          return sendJson(req, res, 400, { error: 'Upload payload must contain at least one byte', received, requestId }, allowedOrigins);
+        }
+        if (declaredLength != null && declaredLength !== received) {
+          finish(false);
+          return sendJson(req, res, 400, { error: 'Received byte count does not match Content-Length', received, declaredLength, requestId }, allowedOrigins);
+        }
         const endedNs = process.hrtime.bigint();
-        const elapsedMs = startedNs ? Number(endedNs - startedNs) / 1e6 : 0;
+        const elapsedMs = Number(endedNs - startedNs) / 1e6;
         const serverMeasuredMbps = elapsedMs > 0 ? (received * 8) / (elapsedMs / 1000) / 1_000_000 : 0;
+        if (!finish(true)) return;
         res.setHeader('X-Transfer-Id', transferId); res.setHeader('X-Test-Bytes', String(received));
         sendJson(req, res, 200, {
-          transferId, requestId, received, elapsedMs: Number(elapsedMs.toFixed(3)), serverMeasuredMbps: Number(serverMeasuredMbps.toFixed(3)),
+          transferId,
+          requestId,
+          received,
+          elapsedMs: Number(elapsedMs.toFixed(3)),
+          serverMeasuredMbps: Number(serverMeasuredMbps.toFixed(3)),
+          receiveStartedNs: startedNs.toString(),
+          receiveEndedNs: endedNs.toString(),
         }, allowedOrigins);
       });
       return;
