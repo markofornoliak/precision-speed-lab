@@ -7,16 +7,20 @@ on:
       - 'server.js'
       - 'src/**'
       - 'test/**'
+      - 'public/app.js'
       - 'package.json'
       - 'Dockerfile'
+      - '.env.example'
       - '.github/workflows/backend-ci.yml'
   pull_request:
     paths:
       - 'server.js'
       - 'src/**'
       - 'test/**'
+      - 'public/app.js'
       - 'package.json'
       - 'Dockerfile'
+      - '.env.example'
       - '.github/workflows/backend-ci.yml'
 
 permissions:
@@ -41,3 +45,36 @@ jobs:
 
       - name: Build production container
         run: docker build -t precision-speed-lab:test .
+
+      - name: Run production container
+        run: docker run -d --name precision-speed-lab-ci -p 3000:3000 precision-speed-lab:test
+
+      - name: Smoke-test health and real byte transfer
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:3000/api/health >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+
+          curl --fail --silent http://127.0.0.1:3000/api/health | grep '"ok":true'
+
+          downloaded=$(curl --fail --silent 'http://127.0.0.1:3000/api/download?bytes=1048576' | wc -c)
+          test "$downloaded" -eq 1048576
+
+          head -c 1048576 /dev/zero | \
+            curl --fail --silent \
+              -H 'Content-Type: application/octet-stream' \
+              --data-binary @- \
+              http://127.0.0.1:3000/api/upload | grep '"received":1048576'
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker logs precision-speed-lab-ci || true
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f precision-speed-lab-ci || true
