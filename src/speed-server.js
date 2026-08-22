@@ -44,6 +44,7 @@ function applyApiHeaders(req, res, corsOrigin) {
   res.setHeader('Access-Control-Expose-Headers', 'Server-Timing, X-Transfer-Id, X-Test-Bytes, X-Request-Id');
   if (corsOrigin) {
     res.setHeader('Access-Control-Allow-Origin', corsOrigin);
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     res.setHeader('Vary', 'Origin');
   }
 }
@@ -144,6 +145,8 @@ function serveStatic(req, res, pathname, publicDir) {
     decoded = decodeURIComponent(pathname);
   } catch {
     res.statusCode = 400;
+    applySecurityHeaders(res);
+    applyNoCache(res);
     res.end('Bad request');
     return true;
   }
@@ -224,20 +227,19 @@ export function createSpeedServer(options = {}) {
 
     if (pathname === '/api/health') {
       if (req.method !== 'GET' && req.method !== 'HEAD') return sendMethodNotAllowed(req, res, ['GET', 'HEAD'], corsOrigin);
-      const body = {
+      if (req.method === 'HEAD') {
+        res.statusCode = 204;
+        applyApiHeaders(req, res, corsOrigin);
+        return res.end();
+      }
+      return sendJson(req, res, 200, {
         ok: true,
         service: 'precision-speed-lab',
         version,
         uptimeSeconds: Math.round(process.uptime()),
         now: Date.now(),
         transfers: transfers.snapshot()
-      };
-      if (req.method === 'HEAD') {
-        res.statusCode = 204;
-        applyApiHeaders(req, res, corsOrigin);
-        return res.end();
-      }
-      return sendJson(req, res, 200, body, corsOrigin);
+      }, corsOrigin);
     }
 
     if (pathname === '/api/capabilities') {
@@ -304,7 +306,6 @@ export function createSpeedServer(options = {}) {
       }
 
       const transferId = crypto.randomUUID();
-      const started = process.hrtime.bigint();
       let remaining = bytes;
       let offset = crypto.randomInt(0, randomPool.length);
       let released = false;
@@ -341,11 +342,7 @@ export function createSpeedServer(options = {}) {
           }
         }
 
-        if (remaining === 0 && !res.writableEnded) {
-          const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
-          res.setHeader?.('X-Server-Transfer-Ms', elapsedMs.toFixed(3));
-          res.end();
-        }
+        if (remaining === 0 && !res.writableEnded) res.end();
       };
 
       pump();
@@ -354,6 +351,11 @@ export function createSpeedServer(options = {}) {
 
     if (pathname === '/api/upload') {
       if (req.method !== 'POST') return sendMethodNotAllowed(req, res, ['POST'], corsOrigin);
+
+      const contentEncoding = req.headers['content-encoding'];
+      if (contentEncoding && contentEncoding !== 'identity') {
+        return sendJson(req, res, 415, { error: 'Compressed uploads are not accepted for speed measurements', requestId }, corsOrigin);
+      }
 
       const declaredLengthRaw = req.headers['content-length'];
       if (declaredLengthRaw != null) {
@@ -430,7 +432,7 @@ export function createSpeedServer(options = {}) {
 
   server.keepAliveTimeout = 65_000;
   server.headersTimeout = 70_000;
-  server.requestTimeout = 15 * 60_000;
+  server.requestTimeout = 30 * 60_000;
   server.maxRequestsPerSocket = 0;
 
   return server;
