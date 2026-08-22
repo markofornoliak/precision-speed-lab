@@ -11,7 +11,8 @@ async function chooseFastDeterministicMode(page) {
   const settings = page.locator('#settingsDetails');
   if (!(await settings.getAttribute('open'))) await settings.locator('summary').click();
   await page.getByRole('switch').uncheck();
-  await page.getByLabel('1 MB').check();
+  await page.getByText('1 MB', { exact: true }).click();
+  await expect(page.getByRole('radio', { name: '1 MB', exact: true })).toBeChecked();
   await page.locator('#connections').selectOption('1');
 }
 
@@ -38,7 +39,7 @@ test('idle instrument is minimal, keyboard operable and accessible @safari', asy
   await page.keyboard.press('Enter');
   await expect(page.locator('#settingsDetails')).toHaveAttribute('open', '');
 
-  await expect(page.getByLabel('Auto')).toBeChecked();
+  await expect(page.getByRole('radio', { name: 'Auto', exact: true })).toBeChecked();
   await expect(page.getByRole('switch')).toBeChecked();
   await expectNoSeriousA11yViolations(page);
 });
@@ -61,7 +62,7 @@ test('Stop discards partial data instead of promoting a result @safari', async (
 test('cancellation during download aborts the run and leaves no final metrics', async ({ page }) => {
   await page.route('**/api/download?**', async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 450));
-    await route.continue();
+    try { await route.continue(); } catch {}
   });
   await waitForIdle(page);
   await chooseFastDeterministicMode(page);
@@ -77,7 +78,7 @@ test('cancellation during download aborts the run and leaves no final metrics', 
 test('cancellation during upload aborts the run and leaves no final metrics', async ({ page }) => {
   await page.route('**/api/upload?**', async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 500));
-    await route.continue();
+    try { await route.continue(); } catch {}
   });
   await waitForIdle(page);
   await chooseFastDeterministicMode(page);
