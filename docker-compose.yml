@@ -1,0 +1,16 @@
+services:
+  precision-speed-lab:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      NODE_ENV: production
+      MAX_TRANSFER_BYTES: 524288000
+      DOWNLOAD_CHUNK_BYTES: 262144
+      RANDOM_POOL_BYTES: 4194304
+      MAX_ACTIVE_TRANSFERS: 128
+      MAX_ACTIVE_PER_CLIENT: 16
+      TRUST_PROXY: 0
