@@ -1,0 +1,5 @@
+@media (prefers-color-scheme: light) {
+  :root {
+    --warning: #8a6500;
+  }
+}
