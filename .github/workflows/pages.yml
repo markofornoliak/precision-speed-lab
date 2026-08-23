@@ -15,7 +15,7 @@ permissions:
 
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   deploy:
@@ -25,34 +25,54 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
-      - name: Build static instrument
+      - name: Build and validate static instrument
         env:
           PSL_API_BASE: ${{ vars.PSL_API_BASE }}
         run: |
           set -euo pipefail
           rm -rf _site
           mkdir _site
-          cp public/* _site/
-          cat > _site/runtime-config.js <<EOF
-          window.__PSL_API_BASE__ = ${PSL_API_BASE@Q};
-          EOF
+          cp -R public/. _site/
           python - <<'PY'
+          import json
+          import os
           from pathlib import Path
-          path = Path('_site/index.html')
-          html = path.read_text()
+
+          site = Path('_site')
+          api_base = os.environ.get('PSL_API_BASE', '').strip().rstrip('/')
+          (site / 'runtime-config.js').write_text(
+              f"window.__PSL_API_BASE__ = {json.dumps(api_base)};\n",
+              encoding='utf-8',
+          )
+
+          path = site / 'index.html'
+          html = path.read_text(encoding='utf-8')
+          html = html.replace('href="/" aria-label=', 'href="./" aria-label=')
           html = html.replace('href="/styles.css"', 'href="./styles.css"')
-          html = html.replace('<script type="module" src="/app.js"></script>', '<script src="./runtime-config.js"></script>\n  <script type="module" src="./pages-bootstrap.js"></script>\n  <script type="module" src="./app.js"></script>')
-          path.write_text(html)
+          html = html.replace(
+              '<script type="module" src="/app.js"></script>',
+              '<script src="./runtime-config.js"></script>\n'
+              '  <script type="module" src="./pages-bootstrap.js"></script>\n'
+              '  <script type="module" src="./app.js"></script>',
+          )
+          path.write_text(html, encoding='utf-8')
           PY
+          node --check _site/app.js
+          node --check _site/measurement-core.js
+          node --check _site/ui-core.js
+          node --check _site/pages-bootstrap.js
+          node --check _site/runtime-config.js
+          grep -q 'Precision Speed Lab' _site/index.html
+          grep -q './pages-bootstrap.js' _site/index.html
           touch _site/.nojekyll
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: _site
 
