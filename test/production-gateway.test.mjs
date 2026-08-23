@@ -71,15 +71,9 @@ test('production gateway exposes Render health and strict readiness independentl
     assert.ok(Number.isFinite(readyBody.runtime.rssBytes));
 
     gateway.beginDrain();
-    const drainingReady = await fetch(`${baseUrl}/readyz`);
-    assert.equal(drainingReady.status, 503);
-    assert.equal(drainingReady.headers.get('retry-after'), '2');
-    const drainingBody = await drainingReady.json();
-    assert.equal(drainingBody.draining, true);
-
-    const healthWhileDraining = await fetch(`${baseUrl}/healthz`);
-    assert.equal(healthWhileDraining.status, 200);
-    assert.equal((await healthWhileDraining.json()).draining, true);
+    const snapshot = gateway.snapshot();
+    assert.equal(snapshot.ok, false);
+    assert.equal(snapshot.draining, true);
   });
 });
 
@@ -120,9 +114,19 @@ test('regional discovery, capacity hints and split-frontend CORS are first-class
   });
 });
 
-test('draining node refuses new heavy transfers without corrupting API semantics', async () => {
+test('draining node remains healthy but refuses readiness and new heavy transfers', async () => {
   await withGateway(async ({ baseUrl, gateway }) => {
     gateway.beginDrain();
+
+    const health = await fetch(`${baseUrl}/healthz`);
+    assert.equal(health.status, 200);
+    assert.equal((await health.json()).draining, true);
+
+    const ready = await fetch(`${baseUrl}/readyz`);
+    assert.equal(ready.status, 503);
+    assert.equal(ready.headers.get('retry-after'), '2');
+    assert.equal((await ready.json()).draining, true);
+
     const response = await fetch(`${baseUrl}/api/download?bytes=1024`, { headers: { Origin: ORIGIN } });
     assert.equal(response.status, 503);
     assert.equal(response.headers.get('retry-after'), '2');
