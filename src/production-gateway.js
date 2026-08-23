@@ -105,6 +105,21 @@ function parseRegionalServers() {
   }
 }
 
+function parseOriginList() {
+  return String(process.env.CORS_ORIGINS || process.env.CORS_ORIGIN || '').split(',').map((value) => value.trim()).filter(Boolean);
+}
+
+function applyCors(req, res, allowedOrigins) {
+  const origin = req.headers.origin;
+  if (!origin || !allowedOrigins.length) return;
+  const allowed = allowedOrigins.includes('*') ? '*' : allowedOrigins.includes(origin) ? origin : '';
+  if (!allowed) return;
+  res.setHeader('Access-Control-Allow-Origin', allowed);
+  res.setHeader('Timing-Allow-Origin', allowed);
+  res.setHeader('Access-Control-Expose-Headers', 'Retry-After, X-Measurement-Node');
+  if (allowed !== '*') res.setHeader('Vary', 'Origin');
+}
+
 function writeJson(res, statusCode, body, extraHeaders = {}) {
   if (res.writableEnded) return;
   res.statusCode = statusCode;
@@ -140,14 +155,15 @@ export function attachProductionGateway(server, options = {}) {
   const nodeId = options.nodeId || process.env.MEASUREMENT_NODE_ID || os.hostname();
   const region = options.region || process.env.MEASUREMENT_REGION || process.env.RENDER_REGION || 'local';
   const publicBaseUrl = (options.publicBaseUrl || process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
-  const maxConnections = options.maxConnections || envInt('MAX_CONNECTIONS', 2048, 32, 50_000);
-  const maxRssBytes = (options.maxRssMiB || envInt('MAX_RSS_MIB', 430, 64, 32_768)) * MIB;
-  const shedRssRatio = options.shedRssRatio || envFloat('SHED_RSS_RATIO', 0.92, 0.5, 1);
-  const shedElu = options.shedElu || envFloat('SHED_EVENT_LOOP_UTILIZATION', 0.97, 0.5, 1);
-  const bucketCapacity = options.bucketCapacity || envInt('ADMISSION_BURST_TOKENS', 180, 20, 100_000);
-  const refillPerSecond = options.refillPerSecond || envFloat('ADMISSION_REFILL_PER_SECOND', 6, 0.1, 10_000);
+  const maxConnections = options.maxConnections ?? envInt('MAX_CONNECTIONS', 2048, 32, 50_000);
+  const maxRssBytes = (options.maxRssMiB ?? envInt('MAX_RSS_MIB', 430, 64, 32_768)) * MIB;
+  const shedRssRatio = options.shedRssRatio ?? envFloat('SHED_RSS_RATIO', 0.92, 0.5, 1);
+  const shedElu = options.shedElu ?? envFloat('SHED_EVENT_LOOP_UTILIZATION', 0.97, 0.5, 1);
+  const bucketCapacity = options.bucketCapacity ?? envInt('ADMISSION_BURST_TOKENS', 180, 20, 100_000);
+  const refillPerSecond = options.refillPerSecond ?? envFloat('ADMISSION_REFILL_PER_SECOND', 6, 0.1, 10_000);
   const buckets = createTokenBuckets({ capacity: bucketCapacity, refillPerSecond, trustProxy });
-  const regionalServers = parseRegionalServers();
+  const regionalServers = options.regionalServers ?? parseRegionalServers();
+  const allowedOrigins = options.allowedOrigins ?? parseOriginList();
   const sockets = new Set();
   let draining = false;
   let lastElu = performance.eventLoopUtilization();
@@ -198,11 +214,27 @@ export function attachProductionGateway(server, options = {}) {
     };
   }
 
+  function writeApiJson(req, res, statusCode, body, headers = {}) {
+    applyCors(req, res, allowedOrigins);
+    res.setHeader('X-Measurement-Node', nodeId);
+    return writeJson(res, statusCode, body, headers);
+  }
+
   server.on('request', (req, res) => {
     let url;
     try { url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`); }
     catch { return writeJson(res, 400, { error: 'Invalid URL' }); }
     const pathname = url.pathname;
+
+    if (isApi(pathname) && req.method === 'OPTIONS') {
+      applyCors(req, res, allowedOrigins);
+      res.statusCode = 204;
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Content-Length, Cache-Control, Authorization');
+      res.setHeader('Access-Control-Max-Age', '600');
+      return res.end();
+    }
 
     if (pathname === '/healthz') {
       if (req.method !== 'GET' && req.method !== 'HEAD') return writeJson(res, 405, { error: 'Method not allowed' }, { Allow: 'GET, HEAD' });
@@ -218,10 +250,20 @@ export function attachProductionGateway(server, options = {}) {
       return writeJson(res, ready.ok ? 200 : 503, ready, ready.ok ? {} : { 'Retry-After': '2' });
     }
 
-    if (pathname === '/api/node-selection') {
-      if (req.method !== 'GET') return writeJson(res, 405, { error: 'Method not allowed' }, { Allow: 'GET' });
+    if (pathname === '/api/servers') {
+      if (req.method !== 'GET') return writeApiJson(req, res, 405, { error: 'Method not allowed' }, { Allow: 'GET' });
       const local = readiness();
-      return writeJson(res, 200, {
+      return writeApiJson(req, res, 200, {
+        strategy: 'client-rtt-with-capacity-hints',
+        self: { id: nodeId, region, url: publicBaseUrl || null, current: true, loadScore: local.runtime.score, ready: local.ok },
+        servers: regionalServers,
+      });
+    }
+
+    if (pathname === '/api/node-selection') {
+      if (req.method !== 'GET') return writeApiJson(req, res, 405, { error: 'Method not allowed' }, { Allow: 'GET' });
+      const local = readiness();
+      return writeApiJson(req, res, 200, {
         strategy: 'client-rtt-with-capacity-hints',
         probe: { samples: 3, statistic: 'median', maxCandidates: 8 },
         self: { id: nodeId, region, url: publicBaseUrl || null, loadScore: local.runtime.score, ready: local.ok },
@@ -230,24 +272,24 @@ export function attachProductionGateway(server, options = {}) {
     }
 
     if (draining && isHeavyMeasurement(pathname)) {
-      return writeJson(res, 503, { error: 'Measurement node is draining', retryable: true }, { 'Retry-After': '2', Connection: 'close' });
+      return writeApiJson(req, res, 503, { error: 'Measurement node is draining', retryable: true }, { 'Retry-After': '2', Connection: 'close' });
     }
 
     if (req.headers['content-length'] && req.headers['transfer-encoding']) {
-      return writeJson(res, 400, { error: 'Ambiguous request framing' }, { Connection: 'close' });
+      return writeApiJson(req, res, 400, { error: 'Ambiguous request framing' }, { Connection: 'close' });
     }
 
     if (isApi(pathname)) {
       const admission = buckets.take(req, routeWeight(pathname, req.method || 'GET'));
       if (!admission.ok) {
-        return writeJson(res, 429, { error: 'Admission rate limit exceeded', retryable: true }, { 'Retry-After': String(admission.retryAfter) });
+        return writeApiJson(req, res, 429, { error: 'Admission rate limit exceeded', retryable: true }, { 'Retry-After': String(admission.retryAfter) });
       }
     }
 
     if (isHeavyMeasurement(pathname)) {
       const runtime = pressure();
       if (runtime.overloaded) {
-        return writeJson(res, 503, {
+        return writeApiJson(req, res, 503, {
           error: 'Measurement node is temporarily saturated',
           retryable: true,
           node: { id: nodeId, region },
