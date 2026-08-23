@@ -28,7 +28,7 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Configure Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Build and validate static instrument
         env:
@@ -54,6 +54,7 @@ jobs:
           html = path.read_text(encoding='utf-8')
           html = html.replace('href="/" aria-label=', 'href="./" aria-label=')
           html = html.replace('href="/styles.css"', 'href="./styles.css"')
+          html = html.replace('href="/accessibility.css"', 'href="./accessibility.css"')
           html = html.replace(
               '<script type="module" src="/app.js"></script>',
               '<script src="./runtime-config.js"></script>\n'
@@ -67,15 +68,24 @@ jobs:
           node --check _site/ui-core.js
           node --check _site/pages-bootstrap.js
           node --check _site/runtime-config.js
+          test -s _site/styles.css
+          test -s _site/accessibility.css
+          test -s _site/app.js
           grep -q 'Precision Speed Lab' _site/index.html
+          grep -q 'href="./styles.css"' _site/index.html
+          grep -q 'href="./accessibility.css"' _site/index.html
           grep -q './pages-bootstrap.js' _site/index.html
+          if grep -Eq '(href|src)="/(styles\.css|accessibility\.css|app\.js)"' _site/index.html; then
+            echo 'Root-relative production asset survived Pages build' >&2
+            exit 1
+          fi
           touch _site/.nojekyll
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v5
         with:
           path: _site
 
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
