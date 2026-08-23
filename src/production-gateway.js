@@ -130,8 +130,19 @@ function writeJson(res, statusCode, body, extraHeaders = {}) {
   res.end(JSON.stringify(body));
 }
 
-function routeWeight(pathname, method) {
-  if (pathname === '/api/download' || pathname === '/api/upload') return 12;
+function transferWeight(bytes) {
+  if (!Number.isSafeInteger(bytes) || bytes <= 0) return 2;
+  return Math.min(48, Math.max(1, 1 + bytes / (16 * MIB)));
+}
+
+function routeWeight(url, req) {
+  const pathname = url.pathname;
+  const method = req.method || 'GET';
+  if (pathname === '/api/download') {
+    if (method === 'HEAD') return 0.5;
+    return transferWeight(Number(url.searchParams.get('bytes')));
+  }
+  if (pathname === '/api/upload') return transferWeight(Number(req.headers['content-length']));
   if (pathname === '/api/progress') return 1;
   if (pathname === '/api/ping') return 0.5;
   if (pathname.startsWith('/api/')) return method === 'POST' ? 4 : 2;
@@ -280,7 +291,7 @@ export function attachProductionGateway(server, options = {}) {
     }
 
     if (isApi(pathname)) {
-      const admission = buckets.take(req, routeWeight(pathname, req.method || 'GET'));
+      const admission = buckets.take(req, routeWeight(url, req));
       if (!admission.ok) {
         return writeApiJson(req, res, 429, { error: 'Admission rate limit exceeded', retryable: true }, { 'Retry-After': String(admission.retryAfter) });
       }
