@@ -1,0 +1,45 @@
+services:
+  - type: web
+    name: precision-speed-lab
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    maxShutdownDelaySeconds: 30
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: TRUST_PROXY
+        value: "1"
+      - key: MEASUREMENT_REGION
+        value: render
+      - key: MAX_CONNECTIONS
+        value: "2048"
+      - key: MAX_ACTIVE_TRANSFERS
+        value: "128"
+      - key: MAX_ACTIVE_PER_CLIENT
+        value: "16"
+      - key: MAX_RSS_MIB
+        value: "430"
+      - key: SHED_RSS_RATIO
+        value: "0.92"
+      - key: SHED_EVENT_LOOP_UTILIZATION
+        value: "0.97"
+      - key: ADMISSION_BURST_TOKENS
+        value: "180"
+      - key: ADMISSION_REFILL_PER_SECOND
+        value: "6"
+      - key: ENABLE_METRICS
+        value: "0"
+      - key: METRICS_TOKEN
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: MEASUREMENT_NODE_ID
+        sync: false
+      - key: MEASUREMENT_SERVERS_JSON
+        sync: false

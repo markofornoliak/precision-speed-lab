@@ -1,0 +1,61 @@
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'public/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Build static instrument
+        env:
+          PSL_API_BASE: ${{ vars.PSL_API_BASE }}
+        run: |
+          set -euo pipefail
+          rm -rf _site
+          mkdir _site
+          cp public/* _site/
+          cat > _site/runtime-config.js <<EOF
+          window.__PSL_API_BASE__ = ${PSL_API_BASE@Q};
+          EOF
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('_site/index.html')
+          html = path.read_text()
+          html = html.replace('href="/styles.css"', 'href="./styles.css"')
+          html = html.replace('<script type="module" src="/app.js"></script>', '<script src="./runtime-config.js"></script>\n  <script type="module" src="./pages-bootstrap.js"></script>\n  <script type="module" src="./app.js"></script>')
+          path.write_text(html)
+          PY
+          touch _site/.nojekyll
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
