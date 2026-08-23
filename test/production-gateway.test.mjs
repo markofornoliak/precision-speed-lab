@@ -6,7 +6,7 @@ import { attachProductionGateway } from '../src/production-gateway.js';
 const MIB = 1024 * 1024;
 const ORIGIN = 'https://markofornoliak.github.io';
 
-async function withGateway(run) {
+async function withGateway(run, gatewayOverrides = {}) {
   const server = createSpeedServer({
     maxBytes: 2 * MIB,
     randomPoolBytes: 128 * 1024,
@@ -34,6 +34,7 @@ async function withGateway(run) {
     shedElu: 1,
     bucketCapacity: 1000,
     refillPerSecond: 1000,
+    ...gatewayOverrides,
   });
 
   await new Promise((resolve, reject) => {
@@ -85,6 +86,17 @@ test('production gateway preserves exact measurement path while adding admission
     assert.equal(Number(response.headers.get('x-test-bytes')), bytes);
     assert.equal((await response.arrayBuffer()).byteLength, bytes);
   });
+});
+
+test('payload-weighted admission keeps calibration transfers inside a realistic burst budget', async () => {
+  await withGateway(async ({ baseUrl }) => {
+    const bytes = 128 * 1024;
+    for (let index = 0; index < 6; index += 1) {
+      const response = await fetch(`${baseUrl}/api/download?bytes=${bytes}`);
+      assert.equal(response.status, 200, `calibration transfer ${index + 1} should remain admissible`);
+      assert.equal((await response.arrayBuffer()).byteLength, bytes);
+    }
+  }, { bucketCapacity: 20, refillPerSecond: 0.1 });
 });
 
 test('regional discovery, capacity hints and split-frontend CORS are first-class', async () => {
